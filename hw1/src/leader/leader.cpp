@@ -22,13 +22,18 @@ Leader::Leader(const uint16_t discovery_port)
   }
 }
 
+Leader::~Leader() {
+  is_stopped_.store(true);
+  threads_.clear();
+}
+
 void Leader::Run() {
   threads_.emplace_back(&Leader::SendHeartbeats, this);
   threads_.emplace_back(&Leader::ReceiveHeartbeats, this);
 }
 
 void Leader::SendHeartbeats() {
-  while (true) {
+  while (!is_stopped_.load()) {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(discovery_port_);
@@ -45,7 +50,7 @@ void Leader::ReceiveHeartbeats() {
   constexpr int32_t kMaxMessageSize = 100;
   char message[kMaxMessageSize];
 
-  while (true) {
+  while (!is_stopped_.load()) {
     std::cerr << "Waiting for discovery..." << std::endl;
 
     while (true) {

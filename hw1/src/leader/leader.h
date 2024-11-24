@@ -10,6 +10,7 @@ namespace integral {
 class Leader {
 public:
   explicit Leader(uint16_t discovery_port);
+  ~Leader();
 
   double GetResult(double a, double b);
 
@@ -26,6 +27,7 @@ private:
   const uint16_t discovery_port_;
   const int discovery_socket_;
 
+  std::atomic<bool> is_stopped_{false};
   std::vector<std::jthread> threads_;
 
   static constexpr std::string_view kLeaderMessage = "Leader";
