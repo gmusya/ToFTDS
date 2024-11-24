@@ -26,5 +26,10 @@ int main(int argc, char **argv) {
   integral::Worker worker(discovery_port, worker_port);
   worker.Run();
 
+  int some_value;
+  std::cin >> some_value;
+
+  worker.Stop();
+
   return 0;
 }

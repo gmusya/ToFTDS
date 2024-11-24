@@ -1,5 +1,6 @@
 #include "hw1/src/leader/leader.h"
 #include "hw1/src/common/ensure.h"
+#include "hw1/src/socket/socket.h"
 
 #include <asm-generic/socket.h>
 #include <cerrno>
@@ -22,10 +23,15 @@ Leader::Leader(const uint16_t discovery_port)
   }
 }
 
-Leader::~Leader() {
+void Leader::Stop() {
+  if (is_stopped_.load()) {
+    return;
+  }
   is_stopped_.store(true);
   threads_.clear();
 }
+
+Leader::~Leader() { Stop(); }
 
 void Leader::Run() {
   threads_.emplace_back(&Leader::SendHeartbeats, this);
@@ -53,27 +59,13 @@ void Leader::ReceiveHeartbeats() {
   while (!is_stopped_.load()) {
     std::cerr << "Waiting for discovery..." << std::endl;
 
-    while (true) {
-      struct sockaddr_storage their_addr;
-      socklen_t addr_len = sizeof(their_addr);
-
-      auto result =
-          recvfrom(discovery_socket_, message, kMaxMessageSize, MSG_DONTWAIT,
-                   reinterpret_cast<sockaddr *>(&their_addr), &addr_len);
-      if (result == -1) {
-        break;
-      }
-
-      auto data = std::string_view(message, result);
-      if (data == kLeaderMessage) {
-        continue;
-      }
-
-      std::cerr << "I am discovered by " << data << std::endl;
-    }
-    if (errno != EAGAIN) {
-      HANDLE_C_ERROR(errno);
-    }
+    OnReceiveAsync(discovery_socket_,
+                   [](int, sockaddr_storage, socklen_t, std::string_view data) {
+                     if (data == kLeaderMessage) {
+                       return;
+                     }
+                     std::cerr << "I am discovered by " << data << std::endl;
+                   });
 
     std::this_thread::sleep_for(std::chrono::seconds(2));
   }

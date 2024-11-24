@@ -22,5 +22,6 @@ int main(int argc, char **argv) {
   std::cin >> a >> b;
 
   std::cout << leader.GetResult(a, b) << std::endl;
+  leader.Stop();
   return 0;
 }

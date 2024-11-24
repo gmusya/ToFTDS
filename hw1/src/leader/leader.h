@@ -15,6 +15,7 @@ public:
   double GetResult(double a, double b);
 
   void Run();
+  void Stop();
 
 private:
   void SendHeartbeats();

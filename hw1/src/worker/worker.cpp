@@ -1,7 +1,9 @@
 #include "hw1/src/worker/worker.h"
 #include "hw1/src/common/ensure.h"
+#include "hw1/src/socket/socket.h"
 
 #include <asm-generic/socket.h>
+#include <chrono>
 #include <iostream>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -43,28 +45,35 @@ Worker::Worker(const uint16_t discovery_port, const uint16_t workload_port)
   }
 }
 
+Worker::~Worker() { Stop(); }
+
+void Worker::Stop() {
+  if (is_stopped_.load()) {
+    return;
+  }
+  is_stopped_.store(true);
+  threads_.clear();
+}
+
 void Worker::Run() { threads_.emplace_back(&Worker::WaitForDiscovery, this); }
 
 void Worker::WaitForDiscovery() {
   constexpr int32_t kMaxMessageSize = 100;
   char message[kMaxMessageSize];
-  while (true) {
-    struct sockaddr_storage their_addr;
-    socklen_t addr_len = sizeof(their_addr);
-
+  while (!is_stopped_.load()) {
     std::cerr << "Waiting for discovery..." << std::endl;
-    HANDLE_C_ERROR(recvfrom(discovery_socket_, message, kMaxMessageSize, 0,
-                            reinterpret_cast<sockaddr *>(&their_addr),
-                            &addr_len));
-    std::cerr << "I am discovered by "
-              << reinterpret_cast<sockaddr_in *>(&their_addr)->sin_addr.s_addr
-              << std::endl;
 
-    std::string message_to_send = std::to_string(workload_port_);
+    OnReceiveAsync(discovery_socket_, [workload_port = this->workload_port_](
+                                          int socket, sockaddr_storage addr,
+                                          socklen_t addr_len,
+                                          std::string_view) {
+      std::cerr << "I am discovered" << std::endl;
+      std::string data = std::to_string(workload_port);
+      HANDLE_C_ERROR(sendto(socket, data.data(), data.size(), 0,
+                            reinterpret_cast<sockaddr *>(&addr), addr_len));
+    });
 
-    HANDLE_C_ERROR(sendto(discovery_socket_, message_to_send.data(),
-                          message_to_send.size(), 0,
-                          reinterpret_cast<sockaddr *>(&their_addr), addr_len));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
   }
 }
 
