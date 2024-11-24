@@ -25,8 +25,8 @@ inline std::string MessageWithFileLine(const std::string &file, const int line,
 
 #define HANDLE_C_ERROR(func)                                                   \
   do {                                                                         \
-    auto &&result = (func);                                                    \
-    if (result == -1) {                                                        \
+    auto &&some_unique_name = (func);                                          \
+    if (some_unique_name == -1) {                                              \
       throw std::runtime_error(MESSAGE_WITH_FILE_LINE(std::strerror(errno)));  \
     }                                                                          \
   } while (false)

@@ -16,6 +16,7 @@ int main(int argc, char **argv) {
   }
 
   integral::Leader leader(discovery_port);
+  leader.Run();
 
   double a, b;
   std::cin >> a >> b;

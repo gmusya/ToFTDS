@@ -2,6 +2,8 @@
 
 #include "hw1/src/common/task.h"
 #include "hw1/src/common/types.h"
+#include <thread>
+#include <vector>
 
 namespace integral {
 
@@ -11,12 +13,22 @@ public:
 
   double GetResult(double a, double b);
 
+  void Run();
+
 private:
+  void SendHeartbeats();
+  void ReceiveHeartbeats();
+
   void SendTask(const Task &, WorkerId);
 
   void HandleTaskResult(const TaskResult, TaskResult);
 
+  const uint16_t discovery_port_;
   const int discovery_socket_;
+
+  std::vector<std::jthread> threads_;
+
+  static constexpr std::string_view kLeaderMessage = "Leader";
 };
 
 } // namespace integral

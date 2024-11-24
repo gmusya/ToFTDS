@@ -33,7 +33,7 @@ Worker::Worker(const uint16_t discovery_port, const uint16_t workload_port)
     ENSURE(workload_socket_ != -1);
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_port = htons(discovery_port);
+    address.sin_port = htons(workload_port);
     address.sin_addr.s_addr = INADDR_ANY;
     HANDLE_C_ERROR(bind(workload_socket_,
                         reinterpret_cast<const sockaddr *>(&address),
@@ -46,19 +46,25 @@ Worker::Worker(const uint16_t discovery_port, const uint16_t workload_port)
 void Worker::Run() { threads_.emplace_back(&Worker::WaitForDiscovery, this); }
 
 void Worker::WaitForDiscovery() {
-  constexpr int32_t kMaxMessageSize = 10;
+  constexpr int32_t kMaxMessageSize = 100;
   char message[kMaxMessageSize];
   while (true) {
     struct sockaddr_storage their_addr;
-    socklen_t addr_len;
+    socklen_t addr_len = sizeof(their_addr);
 
     std::cerr << "Waiting for discovery..." << std::endl;
     HANDLE_C_ERROR(recvfrom(discovery_socket_, message, kMaxMessageSize, 0,
                             reinterpret_cast<sockaddr *>(&their_addr),
                             &addr_len));
     std::cerr << "I am discovered by "
-              << reinterpret_cast<sockaddr *>(&their_addr)->sa_data
+              << reinterpret_cast<sockaddr_in *>(&their_addr)->sin_addr.s_addr
               << std::endl;
+
+    std::string message_to_send = std::to_string(workload_port_);
+
+    HANDLE_C_ERROR(sendto(discovery_socket_, message_to_send.data(),
+                          message_to_send.size(), 0,
+                          reinterpret_cast<sockaddr *>(&their_addr), addr_len));
   }
 }
 
@@ -73,7 +79,8 @@ void Worker::AcceptIncomingConnection() {
                         reinterpret_cast<sockaddr *>(&their_addr), &addr_len));
 
   std::cerr << "Accepted incomming connection from "
-            << reinterpret_cast<sockaddr *>(&their_addr)->sa_data << std::endl;
+            << reinterpret_cast<sockaddr_in *>(&their_addr)->sin_addr.s_addr
+            << std::endl;
 }
 
 } // namespace integral
