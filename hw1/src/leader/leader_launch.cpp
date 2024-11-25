@@ -18,10 +18,12 @@ int main(int argc, char **argv) {
   integral::Leader leader(discovery_port, 10);
   leader.Run();
 
-  double a, b;
-  std::cin >> a >> b;
+  while (true) {
+    double a, b;
+    std::cin >> a >> b;
 
-  std::cout << leader.GetResult(a, b) << std::endl;
+    std::cout << leader.GetResult(a, b) << std::endl;
+  }
   leader.Stop();
   return 0;
 }

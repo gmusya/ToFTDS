@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <iostream>
+#include <mutex>
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdexcept>
@@ -30,7 +31,7 @@ Leader::Leader(const uint16_t discovery_port, const uint32_t max_workers)
   worker_fds_.resize(max_workers);
   for (int i = 0; i < max_workers; ++i) {
     worker_fds_[i].fd = -1;
-    worker_fds_[i].events = POLLIN | POLLHUP | POLLERR;
+    worker_fds_[i].events = POLLIN | POLLHUP | POLLERR | POLLOUT;
   }
 }
 
@@ -59,8 +60,29 @@ void Leader::RunOverWorkers() {
       upd = std::move(hb_updates_);
     }
 
+    {
+      std::vector<std::pair<double, double>> new_tasks;
+      {
+        std::lock_guard lg(new_queries_mutex_);
+        new_tasks = std::move(new_tasks_);
+      }
+
+      for (auto &[a, b] : new_tasks) {
+        QueryInfo info;
+        info.result = 0;
+        info.id = queries_.size();
+        int slices = 10;
+        for (int i = 0; i < slices; ++i) {
+          info.all_tasks.emplace_back(a + (b - a) / slices * i,
+                                      a + (b - a) / slices * (i + 1));
+          info.tasks_to_do.insert(i);
+        }
+        queries_.emplace_back(std::move(info));
+      }
+    }
+
     std::vector<WorkerId> new_workers_;
-    std::cerr << "Known workers = " << known_workers_.size() << std::endl;
+    // std::cerr << "Known workers = " << known_workers_.size() << std::endl;
 
     WorkerId unused_id = 0;
     for (auto &[wid, hb] : upd) {
@@ -74,12 +96,13 @@ void Leader::RunOverWorkers() {
         if (unused_id == worker_fds_.size()) {
           continue;
         }
+        std::cerr << "Trying to add worker " << wid << std::endl;
         WorkerInfo info;
         info.id = wid;
         info.last_heartbeat = hb;
         info.position_in_buffer = unused_id;
-        worker_fds_[unused_id].fd =
-            socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        worker_fds_[unused_id].fd = socket(AF_INET, SOCK_STREAM, 0);
+
         ENSURE(worker_fds_[unused_id].fd != -1);
         {
           sockaddr_in address{};
@@ -109,7 +132,7 @@ void Leader::RunOverWorkers() {
 
     // collect results
     for (auto &pfd : worker_fds_) {
-      pfd.events = POLLIN | POLLHUP | POLLERR;
+      pfd.events = POLLIN | POLLHUP | POLLERR | POLLOUT;
     }
 
     auto workers_to_remove =
@@ -196,29 +219,83 @@ void Leader::RunOverWorkers() {
     char data_buf[kMaxDataBufSize];
     for (size_t i = 0; i < worker_fds_.size(); ++i) {
       auto &pfd = worker_fds_[i];
+      if (pfd.fd == -1) {
+        continue;
+      }
+      WorkerId wid = worker_fds_.size();
+      for (auto &[another_wid, info] : known_workers_) {
+        if (info.position_in_buffer == i) {
+          wid = another_wid;
+          break;
+        }
+      }
+      std::cerr << "Looking at " << wid << " (i = " << i << ", fd = " << pfd.fd
+                << ")" << std::endl;
+      ENSURE(wid != workers.size());
+
       if (pfd.revents & (POLLERR | POLLHUP)) {
-        throw std::runtime_error(":(");
+        std::cerr << "Closed connection with " << wid << std::endl;
+        wid_to_delete_.emplace_back(wid);
+        close(pfd.fd);
       }
       if (pfd.revents & (POLLIN)) {
         auto res = recv(pfd.fd, data_buf, kMaxDataBufSize, 0);
+        HANDLE_C_ERROR(res);
         if (res == 0) {
-          for (auto &[wid, info] : known_workers_) {
-            if (info.position_in_buffer == i) {
-              std::cerr << "Closed connection with " << wid << std::endl;
-              wid_to_delete_.emplace_back(wid);
+          std::cerr << "Closed connection with " << wid << std::endl;
+          wid_to_delete_.emplace_back(wid);
+          close(pfd.fd);
+        } else {
+          std::stringstream ss(std::string(data_buf, res));
+          double result;
+          ss >> result;
+          QueryId qid;
+          TaskId tid;
+          ss >> qid >> tid;
+
+          if (queries_[qid].tasks_in_progress.contains(tid)) {
+            std::cerr << "(" << qid << ", " << tid << ") is " << result
+                      << std::endl;
+            queries_[qid].result += result;
+            queries_[qid].tasks_in_progress.erase(tid);
+            if (queries_[qid].tasks_in_progress.empty()) {
+              std::cerr << "QUERY " << qid << " is solved "
+                        << queries_[qid].result << std::endl;
             }
           }
-          close(pfd.fd);
         }
-        std::cerr << "Has data to read " << std::endl;
       }
-      if (pfd.revents & POLLOUT) {
-        std::cerr << "Has data to write " << std::endl;
+      if (pfd.revents & (POLLOUT)) {
+        // std::cerr << "Has data to write " << std::endl;
+        auto &tasks = known_workers_[wid].assigned_tasks;
+        if (tasks.empty()) {
+          //   std::cerr << "No tasks to do for " << wid << std::endl;
+          continue;
+        }
+        auto task = tasks[0];
+        tasks.erase(tasks.begin());
+        std::stringstream oss;
+        QueryId qid = task.first;
+        TaskId tid = task.second;
+        double a = queries_[qid].all_tasks[tid].a;
+        double b = queries_[qid].all_tasks[tid].b;
+        oss << a << ' ' << b << ' ' << qid << ' ' << tid;
+        std::cerr << "Sending task from " << a << " to " << b << " (" << qid
+                  << ", " << tid << ") to " << wid << std::endl;
+        std::string res = oss.str();
+        auto bytes_written = 0;
+
+        auto qwe = send(pfd.fd, res.data(), res.size(), 0);
+        HANDLE_C_ERROR(qwe);
+        if (qwe != res.size()) {
+          // TODO: fix
+          std::cerr << "Internal error :(" << std::endl;
+        }
       }
     }
-  }
 
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  }
 }
 
 void Leader::SendDiscoveryMessage() {
@@ -238,7 +315,7 @@ void Leader::SendDiscoveryMessage() {
 
 void Leader::ReceiveDiscoveryMessage() {
   while (!is_stopped_.load()) {
-    std::cerr << "Waiting for discovery..." << std::endl;
+    // std::cerr << "Waiting for discovery..." << std::endl;
 
     OnReceiveAsync(discovery_socket_, [&updates = this->hb_updates_,
                                        this](int, sockaddr_storage addr,
@@ -258,14 +335,19 @@ void Leader::ReceiveDiscoveryMessage() {
     });
 
     {
-      std::lock_guard lg(hb_updates_mutex_);
-      std::cerr << "Updates sz = " << hb_updates_.size() << std::endl;
+      //   std::lock_guard lg(hb_updates_mutex_);
+      //   std::cerr << "Updates sz = " << hb_updates_.size() << std::endl;
     }
 
     std::this_thread::sleep_for(std::chrono::seconds(1));
   }
 }
 
-double Leader::GetResult(const double a, const double b) { return b - a; }
+double Leader::GetResult(const double a, const double b) {
+  std::lock_guard lg(new_queries_mutex_);
+  new_tasks_.emplace_back(a, b);
+
+  return 0;
+}
 
 } // namespace integral

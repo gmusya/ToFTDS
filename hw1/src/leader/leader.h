@@ -68,6 +68,9 @@ private:
   std::mutex hb_updates_mutex_;
   std::map<WorkerId, HeartbeatMessage> hb_updates_;
 
+  std::mutex new_queries_mutex_;
+  std::vector<std::pair<double, double>> new_tasks_;
+
   static constexpr std::string_view kLeaderMessage = "Leader";
 };
 

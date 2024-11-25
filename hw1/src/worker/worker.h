@@ -26,6 +26,7 @@ private:
   const int discovery_socket_;
   const int workload_socket_;
   const uint16_t workload_port_;
+  int current_fd_ = -1;
 
   std::atomic<bool> is_stopped_{false};
   std::vector<std::jthread> threads_;

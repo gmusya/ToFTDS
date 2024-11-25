@@ -1,11 +1,14 @@
 #include "hw1/src/worker/worker.h"
 #include "hw1/src/common/ensure.h"
+#include "hw1/src/common/integral.h"
 #include "hw1/src/socket/socket.h"
 
 #include <asm-generic/socket.h>
+#include <cerrno>
 #include <chrono>
 #include <iostream>
 #include <netinet/in.h>
+#include <sstream>
 #include <sys/socket.h>
 #include <thread>
 
@@ -13,7 +16,7 @@ namespace integral {
 
 Worker::Worker(const uint16_t discovery_port, const uint16_t workload_port)
     : discovery_socket_(socket(AF_INET, SOCK_DGRAM, 0)),
-      workload_socket_(socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)),
+      workload_socket_(socket(AF_INET, SOCK_STREAM, 0)),
       workload_port_(workload_port) {
   // TODO: fix leakage on errors
   {
@@ -62,13 +65,13 @@ void Worker::Run() {
 
 void Worker::WaitForDiscovery() {
   while (!is_stopped_.load()) {
-    std::cerr << "Waiting for discovery..." << std::endl;
+    // std::cerr << "Waiting for discovery..." << std::endl;
 
     OnReceiveAsync(discovery_socket_, [workload_port = this->workload_port_](
                                           int socket, sockaddr_storage addr,
                                           socklen_t addr_len,
                                           std::string_view) {
-      std::cerr << "I am discovered" << std::endl;
+      //   std::cerr << "I am discovered" << std::endl;
       std::string data = std::to_string(workload_port);
       HANDLE_C_ERROR(sendto(socket, data.data(), data.size(), 0,
                             reinterpret_cast<sockaddr *>(&addr), addr_len));
@@ -88,13 +91,70 @@ void Worker::AcceptIncomingConnection() {
       struct sockaddr_storage their_addr;
       socklen_t addr_len;
 
-      auto fd = accept(workload_socket_,
-                       reinterpret_cast<sockaddr *>(&their_addr), &addr_len);
-      if (fd == -1) {
+      std::cerr << "Accepting" << std::endl;
+
+      current_fd_ =
+          accept(workload_socket_, reinterpret_cast<sockaddr *>(&their_addr),
+                 &addr_len);
+      if (current_fd_ == -1) {
         if (errno == EAGAIN) {
+          std::cerr << "EAGAIN12" << std::endl;
           break;
         }
-        HANDLE_C_ERROR(fd);
+        HANDLE_C_ERROR(current_fd_);
+      }
+
+      std::cerr << "Accept is done" << std::endl;
+
+      while (true) {
+        constexpr int kMaxDataBufSize = 1024;
+        char data_buf[kMaxDataBufSize];
+
+        std::cerr << "Reading" << std::endl;
+
+        // TODO: read multiple times (otherwise it is incorrect)
+        auto bytes_read = recv(current_fd_, data_buf, kMaxDataBufSize, 0);
+        if (bytes_read == -1) {
+          if (errno == EAGAIN) {
+            std::cerr << "EAGAIN45" << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+          }
+          HANDLE_C_ERROR(bytes_read);
+        }
+        if (bytes_read == 0) {
+          close(current_fd_);
+          current_fd_ = -1;
+          break;
+        }
+
+        std::stringstream ss(std::string(data_buf, bytes_read));
+        double a, b;
+        ss >> a >> b;
+        using QueryId = uint32_t;
+        QueryId qid;
+        TaskId tid;
+        ss >> qid >> tid;
+        std::cerr << "Evaluating integral from " << a << " to " << b << " ("
+                  << qid << ", " << tid << ")..." << std::endl;
+        auto result =
+            EvaluateIntegral(a, b, 100, [](double x) { return 2 * x + 5; });
+        std::cerr << "Integral from " << a << " to " << b << " (" << qid << ", "
+                  << tid << ") is" << result << std::endl;
+
+        std::stringstream oss;
+        oss << result << ' ' << qid << ' ' << tid;
+
+        std::string res = oss.str();
+        auto bytes_written = 0;
+
+        while (bytes_written < res.size()) {
+          auto more_bytes_written =
+              send(current_fd_, res.data() + bytes_written,
+                   res.size() - bytes_written, 0);
+          HANDLE_C_ERROR(more_bytes_written);
+          bytes_written += more_bytes_written;
+        }
       }
     }
 
