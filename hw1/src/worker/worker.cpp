@@ -13,7 +13,7 @@ namespace integral {
 
 Worker::Worker(const uint16_t discovery_port, const uint16_t workload_port)
     : discovery_socket_(socket(AF_INET, SOCK_DGRAM, 0)),
-      workload_socket_(socket(AF_INET, SOCK_STREAM, 0)),
+      workload_socket_(socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0)),
       workload_port_(workload_port) {
   // TODO: fix leakage on errors
   {
@@ -55,11 +55,12 @@ void Worker::Stop() {
   threads_.clear();
 }
 
-void Worker::Run() { threads_.emplace_back(&Worker::WaitForDiscovery, this); }
+void Worker::Run() {
+  threads_.emplace_back(&Worker::WaitForDiscovery, this);
+  threads_.emplace_back(&Worker::AcceptIncomingConnection, this);
+}
 
 void Worker::WaitForDiscovery() {
-  constexpr int32_t kMaxMessageSize = 100;
-  char message[kMaxMessageSize];
   while (!is_stopped_.load()) {
     std::cerr << "Waiting for discovery..." << std::endl;
 
@@ -80,16 +81,25 @@ void Worker::WaitForDiscovery() {
 void Worker::HandleReceivedTask(const Task &) {}
 
 void Worker::AcceptIncomingConnection() {
-  std::cerr << "Waiting for incomming connection..." << std::endl;
+  while (!is_stopped_.load()) {
+    std::cerr << "Waiting for incomming connection..." << std::endl;
 
-  struct sockaddr_storage their_addr;
-  socklen_t addr_len;
-  HANDLE_C_ERROR(accept(workload_socket_,
-                        reinterpret_cast<sockaddr *>(&their_addr), &addr_len));
+    while (true) {
+      struct sockaddr_storage their_addr;
+      socklen_t addr_len;
 
-  std::cerr << "Accepted incomming connection from "
-            << reinterpret_cast<sockaddr_in *>(&their_addr)->sin_addr.s_addr
-            << std::endl;
+      auto fd = accept(workload_socket_,
+                       reinterpret_cast<sockaddr *>(&their_addr), &addr_len);
+      if (fd == -1) {
+        if (errno == EAGAIN) {
+          break;
+        }
+        HANDLE_C_ERROR(fd);
+      }
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
+  }
 }
 
 } // namespace integral

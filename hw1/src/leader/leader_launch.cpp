@@ -15,7 +15,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  integral::Leader leader(discovery_port);
+  integral::Leader leader(discovery_port, 10);
   leader.Run();
 
   double a, b;

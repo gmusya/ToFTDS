@@ -12,13 +12,13 @@ public:
   Worker(const uint16_t discovery_port, const uint16_t workload_port);
   ~Worker();
 
+  void Run();
   void Stop();
 
-  void Run();
+private:
   void WaitForDiscovery();
   void WaitForWorkloadConnection();
 
-private:
   void AcceptIncomingConnection();
 
   void HandleReceivedTask(const Task & /*, LeaderInfo */);
