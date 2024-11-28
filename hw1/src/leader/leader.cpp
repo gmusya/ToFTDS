@@ -240,8 +240,8 @@ void Leader::RunOverWorkers() {
       }
       if (pfd.revents & (POLLIN)) {
         auto res = recv(pfd.fd, data_buf, kMaxDataBufSize, 0);
-        HANDLE_C_ERROR(res);
-        if (res == 0) {
+        // HANDLE_C_ERROR(res);
+        if (res == 0 || res == -1) {
           std::cerr << "Closed connection with " << wid << std::endl;
           wid_to_delete_.emplace_back(wid);
           close(pfd.fd);
@@ -254,11 +254,13 @@ void Leader::RunOverWorkers() {
           ss >> qid >> tid;
 
           if (queries_[qid].tasks_in_progress.contains(tid)) {
+            known_workers_[wid].assigned_tasks.erase(known_workers_[wid].assigned_tasks.begin());
             std::cerr << "(" << qid << ", " << tid << ") is " << result
                       << std::endl;
             queries_[qid].result += result;
             queries_[qid].tasks_in_progress.erase(tid);
-            if (queries_[qid].tasks_in_progress.empty()) {
+            if (queries_[qid].tasks_in_progress.empty() &&
+                queries_[qid].tasks_to_do.empty()) {
               std::cerr << "QUERY " << qid << " is solved "
                         << queries_[qid].result << std::endl;
             }
@@ -273,7 +275,7 @@ void Leader::RunOverWorkers() {
           continue;
         }
         auto task = tasks[0];
-        tasks.erase(tasks.begin());
+        // tasks.erase(tasks.begin());
         std::stringstream oss;
         QueryId qid = task.first;
         TaskId tid = task.second;
@@ -286,7 +288,13 @@ void Leader::RunOverWorkers() {
         auto bytes_written = 0;
 
         auto qwe = send(pfd.fd, res.data(), res.size(), 0);
-        HANDLE_C_ERROR(qwe);
+        if (qwe == -1) {
+          std::cerr << "Closed connection with " << wid << std::endl;
+          wid_to_delete_.emplace_back(wid);
+          close(pfd.fd);
+          continue;
+        }
+        // HANDLE_C_ERROR(qwe);
         if (qwe != res.size()) {
           // TODO: fix
           std::cerr << "Internal error :(" << std::endl;
