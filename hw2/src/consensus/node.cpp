@@ -9,6 +9,8 @@
 #include <string>
 #include <type_traits>
 
+#include "hw2/src/consensus/node_sender.h"
+
 namespace hw2::consensus {
 
 namespace {
@@ -67,6 +69,19 @@ RequestVoteResponse Node::RequestVoteSuccessfull() const {
 
 std::optional<NodeId> &Node::GetVotedFor() {
   return state_.persistent_state.voted_for;
+}
+
+Node::Node(NodeId my_id,
+           std::map<NodeId, std::shared_ptr<IMessageSender>> channels,
+           std::shared_ptr<ITimeout> election_timeout)
+    : my_id_(my_id),
+      channels_([this, my_id, chan = std::move(channels)]() mutable {
+        auto sender = std::make_shared<TrivialMessageSender>(my_id, this);
+        chan[my_id] = sender;
+        return std::move(chan);
+      }()),
+      total_nodes_(channels_.size()), election_timeout_(election_timeout) {
+  state_.persistent_state.log.emplace_back("", 0);
 }
 
 AppendEntriesResponse
@@ -361,9 +376,9 @@ void Node::TickLeader() {
   }
 }
 
-bool Node::DidElectionTimeoutExpire() const { return timeout_->IsExpired(); }
+bool Node::DidElectionTimeoutExpire() const { return election_timeout_->IsExpired(); }
 
-void Node::ResetElectionTimer() { timeout_->Reset(); }
+void Node::ResetElectionTimer() { election_timeout_->Reset(); }
 
 void Node::TickFollower() {
   HandleIncomingMessages();

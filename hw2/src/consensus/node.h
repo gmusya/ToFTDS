@@ -12,24 +12,10 @@
 
 namespace hw2::consensus {
 
-class IMessageSender {
-public:
-  virtual void Send(const Message &message) = 0;
-};
-
 class Node {
 public:
   Node(NodeId my_id, std::map<NodeId, std::shared_ptr<IMessageSender>> channels,
-       std::shared_ptr<ITimeout> election_timeout_)
-      : my_id_(my_id),
-        channels_([this, my_id, chan = std::move(channels)]() mutable {
-          auto sender = std::make_shared<TrivialMessageSender>(my_id, this);
-          chan[my_id] = sender;
-          return std::move(chan);
-        }()),
-        total_nodes_(channels_.size()), timeout_(election_timeout_) {
-    state_.persistent_state.log.emplace_back("", 0);
-  }
+       std::shared_ptr<ITimeout> election_timeout);
 
   void AddMessage(NodeId, Message);
 
@@ -53,19 +39,6 @@ public:
   GetPersistentCommands(LogItemId from, uint64_t max_count) const;
 
 private:
-  class TrivialMessageSender : public IMessageSender {
-  public:
-    TrivialMessageSender(NodeId id, Node *node) : id_(id), node_(node) {}
-
-    void Send(const Message &message) override {
-      node_->AddMessage(id_, message);
-    }
-
-  private:
-    NodeId id_;
-    Node *node_;
-  };
-
   // used only for debugging purposes
   uint64_t tick_number_{};
 
@@ -123,7 +96,7 @@ private:
   const std::map<NodeId, std::shared_ptr<IMessageSender>> channels_;
   const uint64_t total_nodes_;
 
-  std::shared_ptr<ITimeout> timeout_;
+  std::shared_ptr<ITimeout> election_timeout_;
 
   State state_{};
   std::optional<LeaderState> leader_state_;

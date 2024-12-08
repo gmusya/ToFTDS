@@ -37,4 +37,9 @@ struct RequestVoteResponse {
 using Message = std::variant<AppendEntriesRequest, AppendEntriesResponse,
                              RequestVoteRequest, RequestVoteResponse>;
 
+class IMessageSender {
+public:
+  virtual void Send(const Message &message) = 0;
+};
+
 } // namespace hw2::consensus
