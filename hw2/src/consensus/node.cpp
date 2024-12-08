@@ -1,11 +1,35 @@
 #include "hw2/src/consensus/node.h"
+#include "hw2/src/common/log.h"
 #include "hw2/src/consensus/common.h"
 #include "hw2/src/consensus/message.h"
 #include "hw2/src/consensus/state.h"
+#include <future>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <type_traits>
 
 namespace hw2::consensus {
+
+namespace {
+
+std::string RoleAsString(NodeState s) {
+  switch (s) {
+  case NodeState::kCandidate:
+    return "Candidate";
+  case NodeState::kFollower:
+    return "Follower";
+  case NodeState::kLeader:
+    return "Leader";
+  }
+}
+
+} // namespace
+
+#define PRETTY_LOG(msg)                                                        \
+  LOG("(Node id = " + std::to_string(my_id_) + ", tick = " +                   \
+      std::to_string(tick_number_) + ", role = " + RoleAsString(role_) +       \
+      "), " + std::string(__PRETTY_FUNCTION__) + ": " + msg)
 
 Term &Node::GetCurrentTerm() { return state_.persistent_state.current_term; }
 const Term &Node::GetCurrentTerm() const {
@@ -16,15 +40,19 @@ Log &Node::GetLog() { return state_.persistent_state.log; }
 const Log &Node::GetLog() const { return state_.persistent_state.log; }
 
 LogItemId &Node::GetCommitIndex() { return state_.volatile_state.commit_index; }
+const LogItemId &Node::GetCommitIndex() const {
+  return state_.volatile_state.commit_index;
+}
 
 AppendEntriesResponse Node::AppendEntriesUnsuccessfull() const {
   return AppendEntriesResponse{.current_term = GetCurrentTerm(),
-                               .success = false};
+                               .success = false,
+                               .matched_until = std::nullopt};
 }
 
-AppendEntriesResponse Node::AppendEntriesSuccessfull() const {
-  return AppendEntriesResponse{.current_term = GetCurrentTerm(),
-                               .success = true};
+AppendEntriesResponse Node::AppendEntriesSuccessfull(LogItemId id) const {
+  return AppendEntriesResponse{
+      .current_term = GetCurrentTerm(), .success = true, .matched_until = id};
 }
 
 RequestVoteResponse Node::RequestVoteUnsuccessfull() const {
@@ -41,14 +69,16 @@ std::optional<NodeId> &Node::GetVotedFor() {
   return state_.persistent_state.voted_for;
 }
 
-void Node::BecomeFollower() { role_ = NodeState::kFollower; }
-
 AppendEntriesResponse
 Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
+  PRETTY_LOG("")
+
   if (GetCurrentTerm() < req.leader_term) {
     GetCurrentTerm() = req.leader_term;
     BecomeFollower();
   }
+
+  ResetElectionTimer();
 
   // 1. Reply false if term < currentTerm
   const auto current_term = GetCurrentTerm();
@@ -102,15 +132,17 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
         std::min(req.leader_commit, req.prev_log_index + req.entries.size());
   }
 
-  return AppendEntriesSuccessfull();
+  return AppendEntriesSuccessfull(req.prev_log_index + req.entries.size());
 }
 
 Term Node::GetLastLogTerm() const { return GetLog().back().leader_term; }
 
-LogItemId Node::GetLastLogIndex() const { return GetLog().size(); }
+LogItemId Node::GetLastLogIndex() const { return GetLog().size() - 1; }
 
 RequestVoteResponse
 Node::HandleRequestVoteRequest(const RequestVoteRequest &req) {
+  PRETTY_LOG("")
+
   if (GetCurrentTerm() < req.candidate_term) {
     GetCurrentTerm() = req.candidate_term;
     BecomeFollower();
@@ -139,18 +171,70 @@ Node::HandleRequestVoteRequest(const RequestVoteRequest &req) {
   return RequestVoteUnsuccessfull();
 }
 
-void Node::Tick() {
-  switch (role_) {
-  case NodeState::kFollower:
-    TickFollower();
-    return;
-  case NodeState::kCandidate:
-    TickCandidate();
-    return;
-  case NodeState::kLeader:
-    TickLeader();
+void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
+                                       NodeId from_who) {
+  PRETTY_LOG("")
+  if (role_.load() != NodeState::kLeader) {
     return;
   }
+
+  if (!resp.success) {
+    return;
+  }
+
+  leader_state_->match_index[from_who] =
+      std::max(leader_state_->match_index[from_who], *resp.matched_until);
+  leader_state_->next_index[from_who] =
+      std::max(leader_state_->next_index[from_who],
+               leader_state_->match_index[from_who] + 1);
+
+  const auto id = from_who;
+  auto &channel = channels_.at(from_who);
+  if (GetLastLogIndex() >= leader_state_->next_index[id]) {
+    PRETTY_LOG("Will send message to " + std::to_string(id));
+    const auto &log = GetLog();
+    Log log_to_send;
+    for (size_t i = leader_state_->next_index[id]; i <= GetLastLogIndex();
+         ++i) {
+      log_to_send.emplace_back(log[i]);
+    }
+    AppendEntriesRequest request{
+        .leader_term = GetCurrentTerm(),
+        .leader_id = my_id_,
+        .prev_log_index = leader_state_->next_index[id],
+        .prev_log_term = log[leader_state_->next_index[id]].leader_term,
+        .entries = {},
+        .leader_commit = GetCommitIndex()};
+    channel->Send(request);
+  }
+}
+
+void Node::HandleRequestVoteResponse(const RequestVoteResponse &resp,
+                                     NodeId from_who) {
+  PRETTY_LOG("");
+  if (role_.load() != NodeState::kCandidate) {
+    return;
+  }
+  candidate_state_->votes.insert(from_who);
+  PRETTY_LOG("Votes = " + std::to_string(candidate_state_->votes.size()));
+  if (candidate_state_->votes.size() * 2 >= total_nodes_ + 1) {
+    BecomeLeader();
+  }
+}
+
+std::future<std::vector<Command>>
+Node::GetPersistentCommands(LogItemId from, uint64_t max_count) const {
+  std::promise<std::vector<Command>> promise;
+  auto result = promise.get_future();
+
+  if (from == 0) {
+    from = 1;
+  }
+  PersCommandsQuery query(from, max_count);
+
+  std::lock_guard lg(get_persistent_commands_lock_);
+  get_persistent_commands_reqs_.emplace_back(query, std::move(promise));
+  return result;
 }
 
 void Node::HandleIncomingMessages() {
@@ -192,6 +276,95 @@ void Node::HandleIncomingMessages() {
   }
 }
 
+void Node::HandleGetPersistentCommandRequests() const {
+  std::vector<std::pair<PersCommandsQuery, std::promise<std::vector<Command>>>>
+      reqs;
+
+  {
+    std::lock_guard lg(get_persistent_commands_lock_);
+    reqs = std::move(get_persistent_commands_reqs_);
+  }
+
+  for (auto &req : reqs) {
+    PRETTY_LOG("")
+    const auto &[from, cnt] = req.first;
+
+    std::lock_guard lg(log_lock_);
+    const auto &log = GetLog();
+    std::vector<Command> result;
+    for (size_t i = from; i < from + cnt && i <= GetCommitIndex(); ++i) {
+      result.push_back(log[i].command);
+    }
+
+    req.second.set_value(std::move(result));
+  }
+}
+
+void Node::Tick(uint64_t times) {
+  while (times--) {
+    ++tick_number_;
+    HandleGetPersistentCommandRequests();
+
+    switch (role_) {
+    case NodeState::kFollower:
+      TickFollower();
+      break;
+    case NodeState::kCandidate:
+      TickCandidate();
+      break;
+    case NodeState::kLeader:
+      TickLeader();
+      break;
+    }
+  }
+}
+
+void Node::CommitIfPossible() {
+  std::optional<LogItemId> id_to_commit;
+  for (LogItemId i = GetCommitIndex() + 1; i <= GetLastLogIndex(); ++i) {
+    uint64_t cnt = 0;
+    for (const auto &[k, v] : leader_state_->match_index) {
+      cnt += v >= i;
+    }
+    if (cnt * 2 >= total_nodes_ + 1) {
+      id_to_commit = i;
+    }
+  }
+  if (!id_to_commit.has_value()) {
+    return;
+  }
+  PRETTY_LOG("Commit until item " + std::to_string(id_to_commit.value()));
+  for (size_t i = GetCommitIndex() + 1; i <= *id_to_commit; ++i) {
+    auto it = items_to_response_.find(i);
+    if (it != items_to_response_.end()) {
+      it->second.set_value(AddCommandResult());
+    }
+    items_to_response_.erase(it);
+  }
+  GetCommitIndex() = *id_to_commit;
+}
+
+void Node::TickLeader() {
+  CommitIfPossible();
+  HandleIncomingMessages();
+
+  std::vector<std::pair<Command, std::promise<AddCommandResult>>> new_commands;
+  {
+    std::lock_guard lg(incoming_commands_lock_);
+    new_commands = std::move(incoming_commands_);
+  }
+
+  auto &log = GetLog();
+  for (auto &command : new_commands) {
+    log.emplace_back(command.first, GetCurrentTerm());
+    items_to_response_[log.size() - 1] = std::move(command.second);
+  }
+}
+
+bool Node::DidElectionTimeoutExpire() const { return timeout_->IsExpired(); }
+
+void Node::ResetElectionTimer() { timeout_->Reset(); }
+
 void Node::TickFollower() {
   HandleIncomingMessages();
 
@@ -207,6 +380,7 @@ void Node::TickCandidate() {
 }
 
 void Node::SendRequestVoteToAll() {
+  PRETTY_LOG("")
   RequestVoteRequest request{.candidate_term = GetCurrentTerm(),
                              .candidate_id = my_id_,
                              .candidate_last_log_index = GetLastLogIndex(),
@@ -217,14 +391,57 @@ void Node::SendRequestVoteToAll() {
   }
 }
 
+void Node::SendAppendEntriesToAll() {
+  PRETTY_LOG("")
+  AppendEntriesRequest request{.leader_term = GetCurrentTerm(),
+                               .leader_id = my_id_,
+                               .prev_log_index = GetLastLogIndex(),
+                               .prev_log_term = GetLastLogTerm(),
+                               .entries = {},
+                               .leader_commit = GetCommitIndex()};
+
+  for (auto &[node_id, channel] : channels_) {
+    channel->Send(request);
+  }
+}
+
+void Node::BecomeFollower() {
+  PRETTY_LOG("")
+  role_.store(NodeState::kFollower);
+  GetVotedFor().reset();
+  candidate_state_.reset();
+  leader_state_.reset();
+  ResetElectionTimer();
+}
+
 void Node::BecomeCandidate() {
+  PRETTY_LOG("")
   ++GetCurrentTerm();
   GetVotedFor() = my_id_;
   ResetElectionTimer();
   SendRequestVoteToAll();
+  role_.store(NodeState::kCandidate);
+  candidate_state_.emplace();
+  leader_state_.reset();
+}
+
+void Node::BecomeLeader() {
+  PRETTY_LOG("")
+  GetVotedFor().reset();
+  SendAppendEntriesToAll();
+  candidate_state_.reset();
+  leader_state_.emplace();
+  role_.store(NodeState::kLeader);
+  for (const auto &[id, _] : channels_) {
+    leader_state_->next_index[id] = GetLastLogIndex() + 1;
+    leader_state_->match_index[id] = GetLastLogIndex();
+  }
 }
 
 void Node::AddMessage(NodeId id, Message msg) {
+  PRETTY_LOG("FROM " + std::to_string(id) +
+             ", type = " + std::to_string(msg.index()));
+
   std::lock_guard lg(incoming_messages_lock_);
   std::visit(
       [&](auto &&arg) {
@@ -237,9 +454,21 @@ void Node::AddMessage(NodeId id, Message msg) {
           incoming_append_entries_responses_.emplace_back(id, std::move(arg));
         } else if constexpr (std::is_same_v<ArgType, RequestVoteResponse>) {
           incoming_request_vote_responses_.emplace_back(id, std::move(arg));
+        } else {
+          throw std::runtime_error(MESSAGE_WITH_FILE_LINE("Internal error"));
         }
       },
       std::move(msg));
+}
+
+std::future<Node::AddCommandResult> Node::AddCommand(Command command) {
+  PRETTY_LOG("")
+  std::promise<Node::AddCommandResult> promise;
+  std::future<Node::AddCommandResult> result = promise.get_future();
+
+  std::lock_guard lg(incoming_commands_lock_);
+  incoming_commands_.emplace_back(std::move(command), std::move(promise));
+  return result;
 }
 
 } // namespace hw2::consensus

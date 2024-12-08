@@ -19,6 +19,7 @@ struct AppendEntriesRequest {
 struct AppendEntriesResponse {
   Term current_term;
   bool success;
+  std::optional<LogItemId> matched_until;
 };
 
 struct RequestVoteRequest {
