@@ -8,3 +8,4 @@ find_package(GTest REQUIRED PATHS ${DEPS_PATH})
 find_package(absl REQUIRED PATHS ${DEPS_PATH})
 
 add_subdirectory(hw1)
+add_subdirectory(hw2)
