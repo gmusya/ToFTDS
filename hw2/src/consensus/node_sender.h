@@ -8,15 +8,16 @@ namespace hw2::consensus {
 
 class TrivialMessageSender : public IMessageSender {
 public:
-  TrivialMessageSender(NodeId id, Node *node) : id_(id), node_(node) {}
+  void Init(Node *node) { node_ = node; }
 
-  void Send(const Message &message) override {
-    node_->AddMessage(id_, message);
+  TrivialMessageSender() = default;
+
+  void Send(NodeId id, const Message &message) {
+    node_->AddMessage(id, message);
   }
 
 private:
-  NodeId id_;
-  Node *node_;
+  Node *node_ = nullptr;
 };
 
 } // namespace hw2::consensus

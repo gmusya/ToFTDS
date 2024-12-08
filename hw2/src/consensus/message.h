@@ -39,7 +39,7 @@ using Message = std::variant<AppendEntriesRequest, AppendEntriesResponse,
 
 class IMessageSender {
 public:
-  virtual void Send(const Message &message) = 0;
+  virtual void Send(NodeId from, const Message &message) = 0;
 };
 
 } // namespace hw2::consensus

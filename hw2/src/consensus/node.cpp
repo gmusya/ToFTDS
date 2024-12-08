@@ -76,7 +76,8 @@ Node::Node(NodeId my_id,
            std::shared_ptr<ITimeout> election_timeout)
     : my_id_(my_id),
       channels_([this, my_id, chan = std::move(channels)]() mutable {
-        auto sender = std::make_shared<TrivialMessageSender>(my_id, this);
+        auto sender = std::make_shared<TrivialMessageSender>();
+        sender->Init(this);
         chan[my_id] = sender;
         return std::move(chan);
       }()),
@@ -121,7 +122,9 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
   auto pos_in_request = 0;
   for (size_t pos_in_request = 0; pos_in_request < req.entries.size();
        ++pos_in_request) {
-    if (log.size() <= req.prev_log_index + pos_in_request + 1) {
+    PRETTY_LOG("log.size() = " + std::to_string(log.size()));
+    PRETTY_LOG("req.prev_log_index = " + std::to_string(req.prev_log_index));
+    if (log.size() > req.prev_log_index + pos_in_request + 1) {
 
       if (log[req.prev_log_index + pos_in_request + 1] ==
           req.entries[pos_in_request]) {
@@ -136,6 +139,7 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
       log.resize(req.prev_log_index + pos_in_request + 1);
     }
 
+    PRETTY_LOG("PUSH BACK, pos in request = " + std::to_string(pos_in_request));
     // 4. Append any new entries not already in the log
     log.push_back(req.entries[pos_in_request]);
   }
@@ -147,7 +151,8 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
         std::min(req.leader_commit, req.prev_log_index + req.entries.size());
   }
 
-  return AppendEntriesSuccessfull(req.prev_log_index + req.entries.size());
+  return AppendEntriesSuccessfull(
+      std::min(GetLog().size(), req.prev_log_index + req.entries.size()));
 }
 
 Term Node::GetLastLogTerm() const { return GetLog().back().leader_term; }
@@ -188,7 +193,6 @@ Node::HandleRequestVoteRequest(const RequestVoteRequest &req) {
 
 void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
                                        NodeId from_who) {
-  PRETTY_LOG("")
   if (role_.load() != NodeState::kLeader) {
     return;
   }
@@ -199,6 +203,9 @@ void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
 
   leader_state_->match_index[from_who] =
       std::max(leader_state_->match_index[from_who], *resp.matched_until);
+  PRETTY_LOG("From = " + std::to_string(from_who) +
+             ", matched until = " + std::to_string(*resp.matched_until));
+
   leader_state_->next_index[from_who] =
       std::max(leader_state_->next_index[from_who],
                leader_state_->match_index[from_who] + 1);
@@ -206,6 +213,9 @@ void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
   const auto id = from_who;
   auto &channel = channels_.at(from_who);
   if (GetLastLogIndex() >= leader_state_->next_index[id]) {
+    PRETTY_LOG("GetLastLogIndex() = " + std::to_string(GetLastLogIndex()));
+    PRETTY_LOG("leader_state_->next_index[id] = " +
+               std::to_string(leader_state_->next_index[id]));
     PRETTY_LOG("Will send message to " + std::to_string(id));
     const auto &log = GetLog();
     Log log_to_send;
@@ -216,11 +226,11 @@ void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
     AppendEntriesRequest request{
         .leader_term = GetCurrentTerm(),
         .leader_id = my_id_,
-        .prev_log_index = leader_state_->next_index[id],
-        .prev_log_term = log[leader_state_->next_index[id]].leader_term,
-        .entries = {},
+        .prev_log_index = leader_state_->next_index[id] - 1,
+        .prev_log_term = log[leader_state_->next_index[id] - 1].leader_term,
+        .entries = log_to_send,
         .leader_commit = GetCommitIndex()};
-    channel->Send(request);
+    channel->Send(my_id_, request);
   }
 }
 
@@ -271,7 +281,7 @@ void Node::HandleIncomingMessages() {
       // TOOD: unexpected, log this
     }
     auto &channel = channels_.at(sender);
-    channel->Send(HandleAppendEntriesRequest(ae_req));
+    channel->Send(my_id_, HandleAppendEntriesRequest(ae_req));
   }
 
   for (const auto &[sender, rv_req] : rv_reqs) {
@@ -279,7 +289,7 @@ void Node::HandleIncomingMessages() {
       // TOOD: unexpected, log this
     }
     auto &channel = channels_.at(sender);
-    channel->Send(HandleRequestVoteRequest(rv_req));
+    channel->Send(my_id_, HandleRequestVoteRequest(rv_req));
   }
 
   for (const auto &[sender, ae_resp] : ae_resps) {
@@ -301,7 +311,7 @@ void Node::HandleGetPersistentCommandRequests() const {
   }
 
   for (auto &req : reqs) {
-    PRETTY_LOG("")
+    PRETTY_LOG("CommitIndex() = " + std::to_string(GetCommitIndex()));
     const auto &[from, cnt] = req.first;
 
     std::lock_guard lg(log_lock_);
@@ -350,11 +360,13 @@ void Node::CommitIfPossible() {
   }
   PRETTY_LOG("Commit until item " + std::to_string(id_to_commit.value()));
   for (size_t i = GetCommitIndex() + 1; i <= *id_to_commit; ++i) {
+    PRETTY_LOG(std::to_string(i));
     auto it = items_to_response_.find(i);
     if (it != items_to_response_.end()) {
+      PRETTY_LOG("Response to command " + std::to_string(i));
       it->second.set_value(AddCommandResult());
+      items_to_response_.erase(it);
     }
-    items_to_response_.erase(it);
   }
   GetCommitIndex() = *id_to_commit;
 }
@@ -376,7 +388,9 @@ void Node::TickLeader() {
   }
 }
 
-bool Node::DidElectionTimeoutExpire() const { return election_timeout_->IsExpired(); }
+bool Node::DidElectionTimeoutExpire() const {
+  return election_timeout_->IsExpired();
+}
 
 void Node::ResetElectionTimer() { election_timeout_->Reset(); }
 
@@ -402,7 +416,7 @@ void Node::SendRequestVoteToAll() {
                              .candidate_last_log_term = GetLastLogTerm()};
 
   for (auto &[node_id, channel] : channels_) {
-    channel->Send(request);
+    channel->Send(my_id_, request);
   }
 }
 
@@ -416,7 +430,7 @@ void Node::SendAppendEntriesToAll() {
                                .leader_commit = GetCommitIndex()};
 
   for (auto &[node_id, channel] : channels_) {
-    channel->Send(request);
+    channel->Send(my_id_, request);
   }
 }
 
