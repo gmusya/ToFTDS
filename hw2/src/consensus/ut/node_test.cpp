@@ -1,11 +1,13 @@
 #include "gtest/gtest.h"
 #include <future>
+#include <string>
 #include <thread>
 
 #include "hw2/src/common/timeout.h"
 #include "hw2/src/consensus/common.h"
 #include "hw2/src/consensus/node.h"
 #include "hw2/src/consensus/node_sender.h"
+#include "hw2/src/consensus/state.h"
 
 using namespace std::chrono_literals;
 
@@ -177,6 +179,10 @@ TEST(NodeTest, LeaderChanges) {
   EXPECT_EQ(node1.GetRole(), NodeState::kLeader);
   EXPECT_EQ(node2.GetRole(), NodeState::kFollower);
 
+  std::vector<Command> expected_commands;
+  std::vector<std::future<Node::AddCommandResult>> good_futures;
+  std::vector<std::future<Node::AddCommandResult>> bad_futures;
+
   node3.Tick(1);
   std::this_thread::sleep_for(20ms);
 
@@ -187,6 +193,58 @@ TEST(NodeTest, LeaderChanges) {
 
   EXPECT_EQ(node2.GetRole(), NodeState::kFollower);
   EXPECT_EQ(node3.GetRole(), NodeState::kLeader);
+  for (int j = 0; j < 3; ++j) {
+    good_futures.emplace_back(node3.AddCommand("g" + std::to_string(j)));
+    bad_futures.emplace_back(node2.AddCommand("b" + std::to_string(j)));
+
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+
+    expected_commands.emplace_back("g" + std::to_string(j));
+
+    std::this_thread::sleep_for(11ms);
+    node2.Tick();
+    EXPECT_EQ(node2.GetRole(), NodeState::kCandidate);
+    EXPECT_EQ(node3.GetRole(), NodeState::kLeader);
+    node3.Tick();
+    EXPECT_EQ(node2.GetRole(), NodeState::kCandidate);
+    EXPECT_EQ(node3.GetRole(), NodeState::kFollower);
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    EXPECT_EQ(node2.GetRole(), NodeState::kLeader);
+    EXPECT_EQ(node3.GetRole(), NodeState::kFollower);
+
+    std::this_thread::sleep_for(11ms);
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+  }
+
+  for (auto &elem : good_futures) {
+    ASSERT_EQ(elem.wait_for(0ms), std::future_status::ready);
+    ASSERT_TRUE(elem.get().CommandPersisted());
+  }
+
+  for (auto &elem : bad_futures) {
+    ASSERT_EQ(elem.wait_for(0ms), std::future_status::ready);
+    ASSERT_FALSE(elem.get().CommandPersisted());
+  }
 
   EXPECT_EQ(node1.GetRole(), NodeState::kLeader); // it is stale
   std::cerr << "Command send" << std::endl;
@@ -197,11 +255,40 @@ TEST(NodeTest, LeaderChanges) {
     node3.Tick();
   }
 
-  EXPECT_EQ(node1.GetRole(), NodeState::kFollower);
-
   ASSERT_EQ(future.wait_for(0ms), std::future_status::ready);
   auto val = future.get();
   EXPECT_FALSE(val.CommandPersisted());
+
+  for (int i = 0; i < 10; ++i) {
+    node1.Tick();
+    node2.Tick();
+    node3.Tick();
+  }
+
+  std::future<std::vector<Command>> commands1 =
+      node1.GetPersistentCommands(0, 100);
+  std::future<std::vector<Command>> commands2 =
+      node2.GetPersistentCommands(0, 100);
+  std::future<std::vector<Command>> commands3 =
+      node3.GetPersistentCommands(0, 100);
+
+  for (int i = 0; i < 10; ++i) {
+    node1.Tick();
+    node2.Tick();
+    node3.Tick();
+  }
+
+  EXPECT_EQ(node1.GetRole(), NodeState::kFollower);
+  EXPECT_EQ(node2.GetRole(), NodeState::kFollower);
+  EXPECT_EQ(node3.GetRole(), NodeState::kLeader);
+
+  ASSERT_EQ(commands1.wait_for(0ms), std::future_status::ready);
+  ASSERT_EQ(commands2.wait_for(0ms), std::future_status::ready);
+  ASSERT_EQ(commands3.wait_for(0ms), std::future_status::ready);
+
+  ASSERT_EQ(commands1.get(), expected_commands);
+  ASSERT_EQ(commands2.get(), expected_commands);
+  ASSERT_EQ(commands3.get(), expected_commands);
 }
 
 } // namespace
