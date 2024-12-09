@@ -135,14 +135,6 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
         // TODO: unexpected, log this
       }
 
-      //   for (size_t i = req.prev_log_index + pos_in_request + 1; i <
-      //   log.size();
-      //        ++i) {
-      //     PRETTY_LOG("Removing command = " + std::to_string(i));
-      //   }
-      //   PRETTY_LOG("Removing command = " + std::to_string(i));
-      PRETTY_LOG("ABOBA");
-
       log.resize(req.prev_log_index + pos_in_request + 1);
     }
 
@@ -159,7 +151,7 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
   }
 
   return AppendEntriesSuccessfull(
-      std::min(GetLog().size(), req.prev_log_index + req.entries.size()));
+      std::min(GetLog().size() - 1, req.prev_log_index + req.entries.size()));
 }
 
 Term Node::GetLastLogTerm() const { return GetLog().back().leader_term; }
@@ -198,17 +190,13 @@ Node::HandleRequestVoteRequest(const RequestVoteRequest &req) {
   return RequestVoteUnsuccessfull();
 }
 
-void Node::SendAppendEntriesToSomeone(NodeId who) {
+void Node::SendAppendEntriesToSomeone(NodeId who, bool heartbeat) {
   if (GetRole() != NodeState::kLeader) {
     return;
   }
   const auto id = who;
   auto &channel = channels_.at(who);
-  if (GetLastLogIndex() >= leader_state_->next_index[id]) {
-    PRETTY_LOG("GetLastLogIndex() = " + std::to_string(GetLastLogIndex()));
-    PRETTY_LOG("leader_state_->next_index[id] = " +
-               std::to_string(leader_state_->next_index[id]));
-    PRETTY_LOG("Will send message to " + std::to_string(id));
+  if (GetLastLogIndex() >= leader_state_->next_index[id] || heartbeat) {
     const auto &log = GetLog();
     Log log_to_send;
     for (size_t i = leader_state_->next_index[id]; i <= GetLastLogIndex();
@@ -466,10 +454,10 @@ void Node::SendRequestVoteToAll() {
   }
 }
 
-void Node::SendAppendEntriesToAll() {
+void Node::SendAppendEntriesToAll(bool heartbeat) {
   PRETTY_LOG("")
   for (auto &[node_id, channel] : channels_) {
-    SendAppendEntriesToSomeone(node_id);
+    SendAppendEntriesToSomeone(node_id, heartbeat);
   }
 }
 

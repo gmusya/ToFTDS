@@ -89,9 +89,9 @@ private:
 
   void AddNewCommandsToLog();
 
-  void SendAppendEntriesToSomeone(NodeId who);
+  void SendAppendEntriesToSomeone(NodeId who, bool heartbeat = true);
   void SendRequestVoteToAll();
-  void SendAppendEntriesToAll();
+  void SendAppendEntriesToAll(bool heartbeat = true);
 
   void TickFollower();
   void TickCandidate();

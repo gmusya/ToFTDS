@@ -213,10 +213,10 @@ TEST(NodeTest, LeaderChanges) {
     expected_commands.emplace_back("g" + std::to_string(j));
 
     std::this_thread::sleep_for(11ms);
-    node2.Tick();
+    node2.Tick(5);
     EXPECT_EQ(node2.GetRole(), NodeState::kCandidate);
     EXPECT_EQ(node3.GetRole(), NodeState::kLeader);
-    node3.Tick();
+    node3.Tick(5);
     EXPECT_EQ(node2.GetRole(), NodeState::kCandidate);
     EXPECT_EQ(node3.GetRole(), NodeState::kFollower);
     node2.Tick();
