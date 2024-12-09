@@ -102,8 +102,8 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
     return AppendEntriesUnsuccessfull();
   }
 
-  if (role_ != NodeState::kFollower) {
-    // TODO: unexpected, log this
+  if (role_ != NodeState::kFollower && req.leader_id != my_id_) {
+    PRETTY_LOG("UNEXPECTED");
   }
 
   // 2. Reply false if log doesn't contain an entry at prevLogIndex whose term
@@ -122,8 +122,6 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
   auto pos_in_request = 0;
   for (size_t pos_in_request = 0; pos_in_request < req.entries.size();
        ++pos_in_request) {
-    PRETTY_LOG("log.size() = " + std::to_string(log.size()));
-    PRETTY_LOG("req.prev_log_index = " + std::to_string(req.prev_log_index));
     if (log.size() > req.prev_log_index + pos_in_request + 1) {
 
       if (log[req.prev_log_index + pos_in_request + 1] ==
@@ -133,8 +131,17 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
 
       if (log[req.prev_log_index + pos_in_request + 1].leader_term ==
           req.entries[pos_in_request].leader_term) {
+        PRETTY_LOG("UNEXPECTED");
         // TODO: unexpected, log this
       }
+
+      //   for (size_t i = req.prev_log_index + pos_in_request + 1; i <
+      //   log.size();
+      //        ++i) {
+      //     PRETTY_LOG("Removing command = " + std::to_string(i));
+      //   }
+      //   PRETTY_LOG("Removing command = " + std::to_string(i));
+      PRETTY_LOG("ABOBA");
 
       log.resize(req.prev_log_index + pos_in_request + 1);
     }
@@ -191,27 +198,12 @@ Node::HandleRequestVoteRequest(const RequestVoteRequest &req) {
   return RequestVoteUnsuccessfull();
 }
 
-void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
-                                       NodeId from_who) {
-  if (role_.load() != NodeState::kLeader) {
+void Node::SendAppendEntriesToSomeone(NodeId who) {
+  if (GetRole() != NodeState::kLeader) {
     return;
   }
-
-  if (!resp.success) {
-    return;
-  }
-
-  leader_state_->match_index[from_who] =
-      std::max(leader_state_->match_index[from_who], *resp.matched_until);
-  PRETTY_LOG("From = " + std::to_string(from_who) +
-             ", matched until = " + std::to_string(*resp.matched_until));
-
-  leader_state_->next_index[from_who] =
-      std::max(leader_state_->next_index[from_who],
-               leader_state_->match_index[from_who] + 1);
-
-  const auto id = from_who;
-  auto &channel = channels_.at(from_who);
+  const auto id = who;
+  auto &channel = channels_.at(who);
   if (GetLastLogIndex() >= leader_state_->next_index[id]) {
     PRETTY_LOG("GetLastLogIndex() = " + std::to_string(GetLastLogIndex()));
     PRETTY_LOG("leader_state_->next_index[id] = " +
@@ -234,9 +226,38 @@ void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
   }
 }
 
+void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
+                                       NodeId from_who) {
+  PRETTY_LOG("");
+  if (GetCurrentTerm() < resp.current_term) {
+    GetCurrentTerm() = resp.current_term;
+    BecomeFollower();
+  }
+  if (role_.load() != NodeState::kLeader) {
+    return;
+  }
+
+  if (!resp.success) {
+    return;
+  }
+
+  leader_state_->match_index[from_who] =
+      std::max(leader_state_->match_index[from_who], *resp.matched_until);
+  PRETTY_LOG("From = " + std::to_string(from_who) +
+             ", matched until = " + std::to_string(*resp.matched_until));
+
+  leader_state_->next_index[from_who] =
+      std::max(leader_state_->next_index[from_who],
+               leader_state_->match_index[from_who] + 1);
+}
+
 void Node::HandleRequestVoteResponse(const RequestVoteResponse &resp,
                                      NodeId from_who) {
   PRETTY_LOG("");
+  if (GetCurrentTerm() < resp.current_term) {
+    GetCurrentTerm() = resp.current_term;
+    BecomeFollower();
+  }
   if (role_.load() != NodeState::kCandidate) {
     return;
   }
@@ -346,9 +367,12 @@ void Node::Tick(uint64_t times) {
 
 void Node::CommitIfPossible() {
   std::optional<LogItemId> id_to_commit;
+  PRETTY_LOG("GetCommitIndex() = " + std::to_string(GetCommitIndex()));
+  PRETTY_LOG("GetLastLogIndex() = " + std::to_string(GetLastLogIndex()));
   for (LogItemId i = GetCommitIndex() + 1; i <= GetLastLogIndex(); ++i) {
     uint64_t cnt = 0;
     for (const auto &[k, v] : leader_state_->match_index) {
+      PRETTY_LOG("v = " + std::to_string(v));
       cnt += v >= i;
     }
     if (cnt * 2 >= total_nodes_ + 1) {
@@ -371,10 +395,7 @@ void Node::CommitIfPossible() {
   GetCommitIndex() = *id_to_commit;
 }
 
-void Node::TickLeader() {
-  CommitIfPossible();
-  HandleIncomingMessages();
-
+void Node::AddNewCommandsToLog() {
   std::vector<std::pair<Command, std::promise<AddCommandResult>>> new_commands;
   {
     std::lock_guard lg(incoming_commands_lock_);
@@ -385,6 +406,19 @@ void Node::TickLeader() {
   for (auto &command : new_commands) {
     log.emplace_back(command.first, GetCurrentTerm());
     items_to_response_[log.size() - 1] = std::move(command.second);
+    PRETTY_LOG("Added new command to log = " + std::to_string(log.size() - 1));
+  }
+}
+
+void Node::TickLeader() {
+  CommitIfPossible();
+  HandleIncomingMessages();
+
+  // maybe i am not leader anymore
+  if (GetRole() == NodeState::kLeader) {
+    SendAppendEntriesToAll();
+
+    AddNewCommandsToLog();
   }
 }
 
@@ -395,6 +429,18 @@ bool Node::DidElectionTimeoutExpire() const {
 void Node::ResetElectionTimer() { election_timeout_->Reset(); }
 
 void Node::TickFollower() {
+  {
+    std::vector<std::pair<Command, std::promise<AddCommandResult>>>
+        new_commands;
+    {
+      std::lock_guard lg(incoming_commands_lock_);
+      new_commands = std::move(incoming_commands_);
+    }
+    for (auto &command : new_commands) {
+      command.second.set_value(AddCommandResult(0));
+    }
+  }
+
   HandleIncomingMessages();
 
   if (DidElectionTimeoutExpire()) {
@@ -422,15 +468,8 @@ void Node::SendRequestVoteToAll() {
 
 void Node::SendAppendEntriesToAll() {
   PRETTY_LOG("")
-  AppendEntriesRequest request{.leader_term = GetCurrentTerm(),
-                               .leader_id = my_id_,
-                               .prev_log_index = GetLastLogIndex(),
-                               .prev_log_term = GetLastLogTerm(),
-                               .entries = {},
-                               .leader_commit = GetCommitIndex()};
-
   for (auto &[node_id, channel] : channels_) {
-    channel->Send(my_id_, request);
+    SendAppendEntriesToSomeone(node_id);
   }
 }
 
@@ -457,14 +496,14 @@ void Node::BecomeCandidate() {
 void Node::BecomeLeader() {
   PRETTY_LOG("")
   GetVotedFor().reset();
-  SendAppendEntriesToAll();
   candidate_state_.reset();
   leader_state_.emplace();
   role_.store(NodeState::kLeader);
   for (const auto &[id, _] : channels_) {
     leader_state_->next_index[id] = GetLastLogIndex() + 1;
-    leader_state_->match_index[id] = GetLastLogIndex();
+    leader_state_->match_index[id] = 0;
   }
+  SendAppendEntriesToAll();
 }
 
 void Node::AddMessage(NodeId id, Message msg) {
@@ -491,9 +530,13 @@ void Node::AddMessage(NodeId id, Message msg) {
 }
 
 std::future<Node::AddCommandResult> Node::AddCommand(Command command) {
-  PRETTY_LOG("")
   std::promise<Node::AddCommandResult> promise;
   std::future<Node::AddCommandResult> result = promise.get_future();
+
+  if (role_.load() != NodeState::kLeader) {
+    promise.set_value(Node::AddCommandResult(0));
+    return result;
+  }
 
   std::lock_guard lg(incoming_commands_lock_);
   incoming_commands_.emplace_back(std::move(command), std::move(promise));

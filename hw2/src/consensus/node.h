@@ -38,6 +38,8 @@ public:
   std::future<std::vector<Command>>
   GetPersistentCommands(LogItemId from, uint64_t max_count) const;
 
+  NodeState GetRole() const { return role_.load(); }
+
 private:
   // used only for debugging purposes
   uint64_t tick_number_{};
@@ -85,6 +87,9 @@ private:
 
   void CommitIfPossible();
 
+  void AddNewCommandsToLog();
+
+  void SendAppendEntriesToSomeone(NodeId who);
   void SendRequestVoteToAll();
   void SendAppendEntriesToAll();
 
