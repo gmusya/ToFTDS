@@ -151,7 +151,8 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
   }
 
   return AppendEntriesSuccessfull(
-      std::min(GetLog().size() - 1, req.prev_log_index + req.entries.size()));
+      std::min(static_cast<uint64_t>(GetLog().size() - 1),
+               req.prev_log_index + req.entries.size()));
 }
 
 Term Node::GetLastLogTerm() const { return GetLog().back().leader_term; }

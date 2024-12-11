@@ -219,6 +219,12 @@ TEST(NodeTest, LeaderChanges) {
     node3.Tick(5);
     EXPECT_EQ(node2.GetRole(), NodeState::kCandidate);
     EXPECT_EQ(node3.GetRole(), NodeState::kFollower);
+    node2.Tick(5);
+    // node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
     node2.Tick();
     node3.Tick();
     node2.Tick();

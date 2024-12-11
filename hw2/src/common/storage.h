@@ -12,7 +12,7 @@ public:
     if (it == values_.end()) {
       return std::nullopt;
     }
-    return *it;
+    return it->second;
   }
 
   void Set(const Key &key, Value new_value) {
