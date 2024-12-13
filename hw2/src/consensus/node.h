@@ -33,6 +33,8 @@ public:
     std::optional<NodeId> leader_id_;
   };
 
+  const auto GetSenderToItself() const { return channels_.at(my_id_); }
+
   std::future<AddCommandResult> AddCommand(Command command);
 
   std::future<std::vector<Command>>

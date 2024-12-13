@@ -29,7 +29,8 @@ std::string RoleAsString(NodeState s) {
 } // namespace
 
 #define PRETTY_LOG(msg)                                                        \
-  LOG("(Node id = " + std::to_string(my_id_) + ", tick = " +                   \
+  LOG("(Node id = " + std::to_string(my_id_) +                                 \
+      ", term = " + std::to_string(GetCurrentTerm()) + ", tick = " +           \
       std::to_string(tick_number_) + ", role = " + RoleAsString(role_) +       \
       "), " + std::string(__PRETTY_FUNCTION__) + ": " + msg)
 
@@ -99,6 +100,7 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
   // 1. Reply false if term < currentTerm
   const auto current_term = GetCurrentTerm();
   if (req.leader_term < current_term) {
+    PRETTY_LOG("Rejected HandleAppendEntriesRequest 1");
     return AppendEntriesUnsuccessfull();
   }
 
@@ -110,10 +112,14 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
   // matches prevLogTerm
   auto &log = GetLog();
   if (log.size() <= req.prev_log_index) {
+    PRETTY_LOG("Rejected HandleAppendEntriesRequest 2, log.size() = " +
+               std::to_string(log.size()) +
+               ", req.prev_log_index = " + std::to_string(req.prev_log_index));
     return AppendEntriesUnsuccessfull();
   }
 
   if (log[req.prev_log_index].leader_term != req.prev_log_term) {
+    PRETTY_LOG("Rejected HandleAppendEntriesRequest 3");
     return AppendEntriesUnsuccessfull();
   }
 
@@ -174,15 +180,16 @@ Node::HandleRequestVoteRequest(const RequestVoteRequest &req) {
     return RequestVoteResponse();
   }
 
-  if (role_ != NodeState::kFollower) {
-    // TODO: unexpected, log this
+  if (role_ != NodeState::kFollower && my_id_ != req.candidate_id) {
+    LOG("UNEXPECTED");
   }
 
   // 2. If votedFor is null or candidateId, and candidate's log is at least as
   // up-to-date as receiver's log, grant vote
   if (GetVotedFor().value_or(req.candidate_id) == req.candidate_id) {
-    if (GetLastLogTerm() <= req.candidate_last_log_term &&
-        GetLastLogIndex() <= req.candidate_last_log_index) {
+    if (GetLastLogTerm() < req.candidate_last_log_term ||
+        (GetLastLogTerm() == req.candidate_last_log_term &&
+         GetLastLogIndex() <= req.candidate_last_log_index)) {
       GetVotedFor() = req.candidate_id;
       return RequestVoteSuccessfull();
     }
@@ -227,6 +234,10 @@ void Node::HandleAppendEntriesResponse(const AppendEntriesResponse &resp,
   }
 
   if (!resp.success) {
+    PRETTY_LOG("Decrease leader_state_->next_index[" +
+               std::to_string(from_who) +
+               "] = " + std::to_string(leader_state_->next_index[from_who]));
+    --leader_state_->next_index[from_who];
     return;
   }
 
@@ -248,6 +259,9 @@ void Node::HandleRequestVoteResponse(const RequestVoteResponse &resp,
     BecomeFollower();
   }
   if (role_.load() != NodeState::kCandidate) {
+    return;
+  }
+  if (!resp.vote_granted) {
     return;
   }
   candidate_state_->votes.insert(from_who);

@@ -49,7 +49,7 @@ TEST(NodeTest, Trivial) {
 }
 
 std::shared_ptr<hw2::UniformTimer> MakeTimer() {
-  return std::make_shared<hw2::UniformTimer>(9ms, 10ms, 42);
+  return std::make_shared<hw2::UniformTimer>(5ms, 6ms, 42);
 }
 
 TEST(NodeTest, ThreeNodes) {
@@ -176,8 +176,8 @@ TEST(NodeTest, LeaderChanges) {
     node2.Tick(5);
   }
 
-  EXPECT_EQ(node1.GetRole(), NodeState::kLeader);
-  EXPECT_EQ(node2.GetRole(), NodeState::kFollower);
+  ASSERT_EQ(node1.GetRole(), NodeState::kLeader);
+  ASSERT_EQ(node2.GetRole(), NodeState::kFollower);
 
   std::vector<Command> expected_commands;
   std::vector<std::future<Node::AddCommandResult>> good_futures;
@@ -191,12 +191,17 @@ TEST(NodeTest, LeaderChanges) {
     node2.Tick(5);
   }
 
-  EXPECT_EQ(node2.GetRole(), NodeState::kFollower);
-  EXPECT_EQ(node3.GetRole(), NodeState::kLeader);
   for (int j = 0; j < 3; ++j) {
+    std::cerr << "j = " << j << std::endl;
+    std::cerr << __LINE__ << std::endl;
+
+    ASSERT_EQ(node2.GetRole(), NodeState::kFollower);
+    ASSERT_EQ(node3.GetRole(), NodeState::kLeader);
+
     good_futures.emplace_back(node3.AddCommand("g" + std::to_string(j)));
     bad_futures.emplace_back(node2.AddCommand("b" + std::to_string(j)));
 
+    std::cerr << __LINE__ << std::endl;
     node2.Tick();
     node3.Tick();
     node2.Tick();
@@ -209,16 +214,23 @@ TEST(NodeTest, LeaderChanges) {
     node3.Tick();
     node2.Tick();
     node3.Tick();
+    std::cerr << __LINE__ << std::endl;
+
+    ASSERT_EQ(node2.GetRole(), NodeState::kFollower);
+    ASSERT_EQ(node3.GetRole(), NodeState::kLeader);
 
     expected_commands.emplace_back("g" + std::to_string(j));
 
+    node2.Tick();
     std::this_thread::sleep_for(11ms);
+    std::cerr << __LINE__ << std::endl;
     node2.Tick(5);
-    EXPECT_EQ(node2.GetRole(), NodeState::kCandidate);
-    EXPECT_EQ(node3.GetRole(), NodeState::kLeader);
+    std::cerr << __LINE__ << std::endl;
+    ASSERT_EQ(node2.GetRole(), NodeState::kCandidate);
+    ASSERT_EQ(node3.GetRole(), NodeState::kLeader);
     node3.Tick(5);
-    EXPECT_EQ(node2.GetRole(), NodeState::kCandidate);
-    EXPECT_EQ(node3.GetRole(), NodeState::kFollower);
+    ASSERT_EQ(node2.GetRole(), NodeState::kCandidate);
+    ASSERT_EQ(node3.GetRole(), NodeState::kFollower);
     node2.Tick(5);
     // node3.Tick();
     node2.Tick();
@@ -228,9 +240,11 @@ TEST(NodeTest, LeaderChanges) {
     node2.Tick();
     node3.Tick();
     node2.Tick();
-    EXPECT_EQ(node2.GetRole(), NodeState::kLeader);
-    EXPECT_EQ(node3.GetRole(), NodeState::kFollower);
+    ASSERT_EQ(node2.GetRole(), NodeState::kLeader);
+    ASSERT_EQ(node3.GetRole(), NodeState::kFollower);
 
+    std::cerr << __LINE__ << std::endl;
+    node3.Tick(5);
     std::this_thread::sleep_for(11ms);
     node3.Tick();
     node2.Tick();
@@ -240,6 +254,12 @@ TEST(NodeTest, LeaderChanges) {
     node2.Tick();
     node3.Tick();
     node2.Tick();
+    node3.Tick();
+    node2.Tick();
+    node3.Tick();
+    node2.Tick();
+
+    std::cerr << __LINE__ << std::endl;
   }
 
   for (auto &elem : good_futures) {
@@ -295,6 +315,78 @@ TEST(NodeTest, LeaderChanges) {
   ASSERT_EQ(commands1.get(), expected_commands);
   ASSERT_EQ(commands2.get(), expected_commands);
   ASSERT_EQ(commands3.get(), expected_commands);
+}
+
+TEST(NodeTest, PersistentValues) {
+  auto sender1 = std::make_shared<TrivialMessageSender>();
+  auto sender2 = std::make_shared<TrivialMessageSender>();
+  auto sender3 = std::make_shared<TrivialMessageSender>();
+
+  hw2::consensus::Node node1(1, {{2, sender2}, {3, sender3}}, MakeTimer());
+  hw2::consensus::Node node2(2, {{1, sender1}, {3, sender3}}, MakeTimer());
+  hw2::consensus::Node node3(3, {{1, sender1}, {2, sender2}}, MakeTimer());
+
+  sender1->Init(&node1);
+  sender2->Init(&node2);
+  sender3->Init(&node3);
+
+  node1.Tick(5);
+  std::this_thread::sleep_for(10ms);
+  node1.Tick(2);
+  for (int i = 0; i < 5; ++i) {
+    node1.Tick(5);
+    node2.Tick(5);
+  }
+
+  ASSERT_EQ(node1.GetRole(), NodeState::kLeader);
+  ASSERT_EQ(node2.GetRole(), NodeState::kFollower);
+  {
+    auto res = node1.AddCommand("cmd1");
+
+    for (int i = 0; i < 5; ++i) {
+      node1.Tick(5);
+      node2.Tick(5);
+    }
+
+    ASSERT_TRUE(res.get().CommandPersisted());
+  }
+  {
+    for (int i = 0; i < 5; ++i) {
+      node1.Tick(5);
+      node2.Tick(5);
+      node3.Tick(5);
+    }
+  }
+  {
+    for (int i = 0; i < 5; ++i) {
+      node3.Tick(5);
+      node2.Tick(5);
+    }
+    std::this_thread::sleep_for(11ms);
+    for (int i = 0; i < 5; ++i) {
+      node3.Tick(5);
+      node2.Tick(5);
+    }
+  }
+  {
+    for (int i = 0; i < 5; ++i) {
+      node1.Tick(5);
+      node2.Tick(5);
+    }
+    std::this_thread::sleep_for(11ms);
+    for (int i = 0; i < 5; ++i) {
+      node1.Tick(5);
+      node2.Tick(5);
+    }
+  }
+  {
+    auto commands = node1.GetPersistentCommands(1, 1);
+    for (int i = 0; i < 5; ++i) {
+      node1.Tick(5);
+      node2.Tick(5);
+    }
+    ASSERT_EQ(commands.get(), std::vector<Command>{"cmd1"});
+  }
 }
 
 } // namespace

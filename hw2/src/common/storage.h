@@ -2,6 +2,7 @@
 
 #include <map>
 #include <optional>
+#include <sstream>
 
 namespace hw2 {
 
@@ -17,6 +18,17 @@ public:
 
   void Set(const Key &key, Value new_value) {
     values_[key] = std::move(new_value);
+  }
+
+  std::string ToString() {
+    std::stringstream ss;
+    ss << "{";
+    for (const auto &[key, value] : values_) {
+      ss << "\n";
+      ss << "  " << key << ": " << value;
+    }
+    ss << "\n}";
+    return ss.str();
   }
 
 private:

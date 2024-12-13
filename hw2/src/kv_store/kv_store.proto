@@ -22,7 +22,7 @@ message WriteRequest {
 
 message WriteResponse {
   oneof response {
-    string previous_value = 1;
+    bool value_persisted = 1;
     int32 master_id = 2;
   }
 }

@@ -1,7 +1,9 @@
 #pragma once
 
+#include "hw2/src/common/log.h"
 #include <chrono>
 #include <random>
+#include <sstream>
 
 namespace hw2 {
 
@@ -22,7 +24,12 @@ public:
     expires_at_ = Now() + period;
   }
 
-  bool IsExpired() const override { return Now() > expires_at_; }
+  bool IsExpired() const override {
+    std::stringstream ss;
+    ss << "Now = " << Now() << ", expires_at = " << expires_at_;
+    LOG(ss.str());
+    return Now() > expires_at_;
+  }
 
 private:
   static std::chrono::milliseconds Now() {
