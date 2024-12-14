@@ -82,6 +82,7 @@ public:
   }
 
   void DumpState() {
+    ActualizeState();
     std::lock_guard lg(lock_);
     std::cerr << storage_.ToString() << std::endl;
   }
