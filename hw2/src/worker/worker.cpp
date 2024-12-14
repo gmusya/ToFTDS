@@ -148,6 +148,10 @@ public:
       consensus::RequestVoteResponse response;
       response.current_term = proto_resp.current_term();
       response.vote_granted = proto_resp.vote_granted();
+      if (response.vote_granted) {
+        LOG("ME");
+        response.candidate_term = proto_resp.candidate_term();
+      }
       sender_->Send(from, response);
     } else {
       response->set_comment("Empty message");
@@ -216,6 +220,7 @@ public:
               auto rv_resp = proto_msg->mutable_rv_resp();
               rv_resp->set_current_term(arg.current_term);
               rv_resp->set_vote_granted(arg.vote_granted);
+              rv_resp->set_candidate_term(arg.candidate_term);
             } else {
               throw std::runtime_error(
                   MESSAGE_WITH_FILE_LINE("Internal error"));

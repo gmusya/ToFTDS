@@ -63,9 +63,10 @@ RequestVoteResponse Node::RequestVoteUnsuccessfull() const {
                              .vote_granted = false};
 }
 
-RequestVoteResponse Node::RequestVoteSuccessfull() const {
+RequestVoteResponse Node::RequestVoteSuccessfull(Term candidate_term) const {
   return RequestVoteResponse{.current_term = GetCurrentTerm(),
-                             .vote_granted = true};
+                             .vote_granted = true,
+                             .candidate_term = candidate_term};
 }
 
 std::optional<NodeId> &Node::GetVotedFor() {
@@ -205,7 +206,8 @@ Node::HandleRequestVoteRequest(const RequestVoteRequest &req) {
         (GetLastLogTerm() == req.candidate_last_log_term &&
          GetLastLogIndex() <= req.candidate_last_log_index)) {
       GetVotedFor() = req.candidate_id;
-      return RequestVoteSuccessfull();
+      LOG("Candidate term = " + std::to_string(req.candidate_term));
+      return RequestVoteSuccessfull(req.candidate_term);
     }
   }
 
@@ -276,6 +278,9 @@ void Node::HandleRequestVoteResponse(const RequestVoteResponse &resp,
     return;
   }
   if (!resp.vote_granted) {
+    return;
+  }
+  if (resp.candidate_term != GetCurrentTerm()) {
     return;
   }
   candidate_state_->votes.insert(from_who);

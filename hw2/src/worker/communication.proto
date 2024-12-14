@@ -36,6 +36,7 @@ message RequestVoteRequest {
 message RequestVoteResponse {
   int32 current_term = 1;
   bool vote_granted = 2;
+  int32 candidate_term = 3;
 }
 
 message Message {

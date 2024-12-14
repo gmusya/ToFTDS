@@ -73,7 +73,7 @@ private:
   AppendEntriesResponse AppendEntriesSuccessfull(LogItemId id) const;
 
   RequestVoteResponse RequestVoteUnsuccessfull() const;
-  RequestVoteResponse RequestVoteSuccessfull() const;
+  RequestVoteResponse RequestVoteSuccessfull(Term candidate_term) const;
 
   bool DidElectionTimeoutExpire() const;
   void ResetElectionTimer();
