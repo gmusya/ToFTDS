@@ -136,23 +136,6 @@ TEST(NodeTest, ThrowOutUncommited) {
     future_status = future.wait_for(0ms);
     ASSERT_EQ(future_status, std::future_status::ready);
   }
-  {
-    node3.AddCommand("3s1");
-    std::vector<std::future<Node::AddCommandResult>> futures1;
-    std::vector<std::future<Node::AddCommandResult>> futures2;
-    std::vector<std::future<Node::AddCommandResult>> futures3;
-    for (int i = 0; i < 100; ++i) {
-      futures1.emplace_back(node1.AddCommand("A"));
-      futures2.emplace_back(node2.AddCommand("B"));
-      futures3.emplace_back(node3.AddCommand("C"));
-    }
-
-    for (int j = 0; j < 100; ++j) {
-      ASSERT_TRUE(futures1[j].wait_for(0ms) == std::future_status::timeout);
-      ASSERT_TRUE(futures2[j].wait_for(0ms) == std::future_status::ready);
-      ASSERT_TRUE(futures3[j].wait_for(0ms) == std::future_status::ready);
-    }
-  }
 }
 
 TEST(NodeTest, LeaderChanges) {

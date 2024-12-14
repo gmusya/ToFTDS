@@ -108,6 +108,20 @@ Node::HandleAppendEntriesRequest(const AppendEntriesRequest &req) {
     PRETTY_LOG("UNEXPECTED");
   }
 
+  {
+    if (GetRole() != NodeState::kLeader) {
+      std::vector<std::pair<Command, std::promise<AddCommandResult>>>
+          new_commands;
+      {
+        std::lock_guard lg(incoming_commands_lock_);
+        new_commands = std::move(incoming_commands_);
+      }
+      for (auto &command : new_commands) {
+        command.second.set_value(AddCommandResult(req.leader_id));
+      }
+    }
+  }
+
   // 2. Reply false if log doesn't contain an entry at prevLogIndex whose term
   // matches prevLogTerm
   auto &log = GetLog();
@@ -432,18 +446,6 @@ bool Node::DidElectionTimeoutExpire() const {
 void Node::ResetElectionTimer() { election_timeout_->Reset(); }
 
 void Node::TickFollower() {
-  {
-    std::vector<std::pair<Command, std::promise<AddCommandResult>>>
-        new_commands;
-    {
-      std::lock_guard lg(incoming_commands_lock_);
-      new_commands = std::move(incoming_commands_);
-    }
-    for (auto &command : new_commands) {
-      command.second.set_value(AddCommandResult(0));
-    }
-  }
-
   HandleIncomingMessages();
 
   if (DidElectionTimeoutExpire()) {
@@ -535,11 +537,6 @@ void Node::AddMessage(NodeId id, Message msg) {
 std::future<Node::AddCommandResult> Node::AddCommand(Command command) {
   std::promise<Node::AddCommandResult> promise;
   std::future<Node::AddCommandResult> result = promise.get_future();
-
-  if (role_.load() != NodeState::kLeader) {
-    promise.set_value(Node::AddCommandResult(0));
-    return result;
-  }
 
   std::lock_guard lg(incoming_commands_lock_);
   incoming_commands_.emplace_back(std::move(command), std::move(promise));
