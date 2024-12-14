@@ -32,6 +32,7 @@ struct RequestVoteRequest {
 struct RequestVoteResponse {
   Term current_term;
   bool vote_granted;
+  Term candidate_term;
 };
 
 using Message = std::variant<AppendEntriesRequest, AppendEntriesResponse,
