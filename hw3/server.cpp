@@ -4,6 +4,8 @@
 #include <mutex>
 #include <openssl/rsa.h>
 
+#include "absl/flags/flag.h"
+#include "absl/flags/parse.h"
 #include "hw3/log.h"
 
 using namespace web;
@@ -72,7 +74,14 @@ void handle_patch(http_request request) {
   });
 }
 
-int main() {
+ABSL_FLAG(std::string, host, "0.0.0.0", "");
+ABSL_FLAG(uint16_t, port, 0, "");
+ABSL_FLAG(uint16_t, min_port, 0, "");
+ABSL_FLAG(uint16_t, max_port, 0, "");
+
+int main(int argc, char **argv) {
+  absl::ParseCommandLine(argc, argv);
+
   http_listener listener("http://localhost:10000/");
 
   listener.support(methods::GET, handle_get);
