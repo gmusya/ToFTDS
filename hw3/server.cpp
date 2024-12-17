@@ -1,6 +1,8 @@
 #include <cpprest/http_listener.h>
 #include <cpprest/http_msg.h>
 #include <cpprest/json.h>
+#include <mutex>
+#include <openssl/rsa.h>
 
 #include "hw3/log.h"
 
@@ -12,9 +14,11 @@ using namespace web::http::experimental::listener;
 #include <map>
 #include <string>
 
+std::mutex lock;
 std::map<std::string, std::string> dictionary;
 
 void handle_get(http_request request) {
+  std::lock_guard lg(lock);
   LOG("\nhandle GET\n");
 
   auto answer = json::value::object();
@@ -49,6 +53,7 @@ void handle_request(
 }
 
 void handle_patch(http_request request) {
+  std::lock_guard lg(lock);
   LOG("\nhandle PATCH\n");
 
   handle_request(request, [](json::value const &jvalue, json::value &answer) {
@@ -78,8 +83,23 @@ int main() {
         .then([&listener]() { LOG("\nstarting to listen\n"); })
         .wait();
 
-    while (true)
-      ;
+    while (true) {
+      std::string action;
+      std::cin >> action;
+      if (action == "dump") {
+        std::lock_guard lg(lock);
+        std::stringstream result;
+        result << "{\n";
+        for (const auto &[k, v] : dictionary) {
+          result << "  " << k << ": " << v << "\n";
+        }
+        result << "}";
+        std::cerr << result.str() << std::endl;
+      } else if (action == "clear") {
+        std::lock_guard lg(lock);
+        dictionary.clear();
+      }
+    }
   } catch (std::exception const &e) {
     std::cout << e.what() << std::endl;
   }
