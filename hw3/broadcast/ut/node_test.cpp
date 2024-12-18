@@ -1,5 +1,6 @@
 #include "gtest/gtest.h"
 #include <future>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -98,6 +99,114 @@ TEST(NodeTest, ThreeConflictingNodes) {
   ASSERT_EQ(node1.GetState().size(), 3);
   ASSERT_EQ(node1.GetState()[2].payload, payload2);
   ASSERT_EQ(node1.GetState()[2].vector_clock, clock2);
+}
+
+TEST(NodeTest, CausalOrder) {
+  constexpr int kTotalNodes = 5;
+
+  std::vector<std::vector<std::shared_ptr<TrivialMessageSender>>>
+      trivial_senders(
+          kTotalNodes,
+          std::vector<std::shared_ptr<TrivialMessageSender>>(kTotalNodes));
+  std::vector<std::vector<std::shared_ptr<BufferingMessageSender>>>
+      lazy_senders(
+          kTotalNodes,
+          std::vector<std::shared_ptr<BufferingMessageSender>>(kTotalNodes));
+
+  for (size_t i = 0; i < kTotalNodes; ++i) {
+    for (size_t j = 0; j < kTotalNodes; ++j) {
+      trivial_senders[i][j] = std::make_shared<TrivialMessageSender>();
+      lazy_senders[i][j] =
+          std::make_shared<BufferingMessageSender>(trivial_senders[i][j], 1);
+    }
+  }
+
+  std::vector<std::unique_ptr<hw3::broadcast::Node>> nodes;
+  for (size_t i = 0; i < kTotalNodes; ++i) {
+    std::map<NodeId, std::shared_ptr<IMessageSender>> channels;
+    for (size_t j = 0; j < kTotalNodes; ++j) {
+      if (i == j) {
+        continue;
+      }
+      channels[j] = lazy_senders[i][j];
+    }
+
+    nodes.emplace_back(std::make_unique<Node>(i, channels));
+
+    for (size_t j = 0; j < kTotalNodes; ++j) {
+      trivial_senders[j][i]->Init(nodes[i].get());
+    }
+  }
+
+  Payload payload;
+  payload.data.emplace_back("0", "0");
+
+  for (int l : {0, 1, 2}) {
+    for (int r : {3, 4}) {
+      lazy_senders[l][r]->ChangeBufferSize(10'000);
+    }
+  }
+
+  nodes[0]->AppendNewPayload(payload);
+  for (int iter = 0; iter < 3; ++iter) {
+    for (int i = 0; i < 5; ++i) {
+      nodes[i]->Tick();
+    }
+  }
+
+  ASSERT_EQ(nodes[0]->GetState().size(), 1);
+  ASSERT_EQ(nodes[1]->GetState().size(), 1);
+  ASSERT_EQ(nodes[2]->GetState().size(), 1);
+  ASSERT_EQ(nodes[3]->GetState().size(), 0);
+  ASSERT_EQ(nodes[4]->GetState().size(), 0);
+
+  for (int l : {1, 2}) {
+    for (int r : {3, 4}) {
+      lazy_senders[l][r]->LoseMessages();
+      lazy_senders[l][r]->ChangeBufferSize(1);
+    }
+  }
+
+  Payload payload1;
+  payload1.data.emplace_back("1", "1");
+  nodes[2]->AppendNewPayload(payload1);
+  for (int iter = 0; iter < 3; ++iter) {
+    for (int i : {2, 3, 4}) {
+      nodes[i]->Tick();
+    }
+  }
+
+  ASSERT_EQ(nodes[0]->GetState().size(), 1);
+  ASSERT_EQ(nodes[1]->GetState().size(), 1);
+  ASSERT_EQ(nodes[2]->GetState().size(), 2);
+  ASSERT_EQ(nodes[3]->GetState().size(), 0);
+  ASSERT_EQ(nodes[4]->GetState().size(), 0);
+
+  for (int r : {3, 4}) {
+    lazy_senders[0][r]->ChangeBufferSize(1);
+  }
+
+  for (int iter = 0; iter < 3; ++iter) {
+    for (int i : {0, 3, 4}) {
+      nodes[i]->Tick();
+    }
+  }
+
+  ASSERT_EQ(nodes[0]->GetState().size(), 2);
+  ASSERT_EQ(nodes[1]->GetState().size(), 1);
+  ASSERT_EQ(nodes[2]->GetState().size(), 2);
+  ASSERT_EQ(nodes[3]->GetState().size(), 2);
+  ASSERT_EQ(nodes[4]->GetState().size(), 2);
+
+  nodes[1]->Tick();
+  ASSERT_EQ(nodes[1]->GetState().size(), 2);
+
+  auto state = nodes[0]->GetState();
+  VectorClock expeceted_vector_clock0 = {1, 0, 0, 0, 0};
+  VectorClock expeceted_vector_clock1 = {1, 0, 1, 0, 0};
+
+  ASSERT_EQ(state[0].vector_clock, expeceted_vector_clock0);
+  ASSERT_EQ(state[1].vector_clock, expeceted_vector_clock1);
 }
 
 } // namespace

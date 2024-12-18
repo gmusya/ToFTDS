@@ -85,6 +85,9 @@ private:
     }
 
     all_messages_.at(message_id).received_nodes.insert(my_id_);
+    for (auto &id : req.already_received_nodes) {
+      all_messages_.at(message_id).received_nodes.insert(id);
+    }
 
     if (req.author_id == req.sender) {
       Request my_request = req;
@@ -103,6 +106,18 @@ private:
       response.message_id = message_id;
       response.received_nodes = all_messages_.at(message_id).received_nodes;
       channels_.at(req.author_id)->Send(response);
+    }
+  }
+
+  void HandleMessage(const Response &resp) {
+    const auto &id = resp.message_id;
+    if (!all_messages_.contains(id)) {
+      LOG("HandleResponse: unexpected");
+      return;
+    }
+    auto &info = all_messages_.at(id);
+    for (const auto node_id : resp.received_nodes) {
+      info.received_nodes.insert(node_id);
     }
   }
 
@@ -153,18 +168,6 @@ private:
           }
         }
       }
-    }
-  }
-
-  void HandleMessage(const Response &resp) {
-    const auto &id = resp.message_id;
-    if (!all_messages_.contains(id)) {
-      LOG("HandleResponse: unexpected");
-      return;
-    }
-    auto &info = all_messages_.at(id);
-    for (const auto node_id : resp.received_nodes) {
-      info.received_nodes.insert(node_id);
     }
   }
 
