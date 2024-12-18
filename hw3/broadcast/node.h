@@ -17,6 +17,12 @@ namespace hw3::broadcast {
 
 class Node {
 public:
+  Node(NodeId my_id, std::map<NodeId, std::shared_ptr<IMessageSender>> channels)
+      : total_nodes_(channels.size() + 1), my_id_(my_id),
+        channels_(std::move(channels)) {
+    commited_sequence_numbers_.resize(total_nodes_);
+  }
+
   void ReceiveMessage(Message msg) {
     std::lock_guard lg(new_messages_to_process_lock_);
     new_messages_to_process_.emplace_back(std::move(msg));
@@ -41,7 +47,7 @@ public:
   std::future<void> AppendNewPayload(const Payload &payload) {
     auto seq_number = my_sequence_number_.fetch_add(1);
     auto clock = commited_sequence_numbers_;
-    clock[my_id_] = my_sequence_number_ + 1;
+    clock[my_id_] = seq_number + 1;
     Request request{.sender = my_id_,
                     .author_id = my_id_,
                     .payload = payload,
@@ -50,7 +56,7 @@ public:
     ReceiveMessage(request);
 
     std::lock_guard lg(responses_lock_);
-    auto result = responses_[seq_number].get_future();
+    auto result = responses_[seq_number + 1].get_future();
     return result;
   }
 
@@ -108,6 +114,14 @@ private:
           info.is_commited = true;
           ++commited_sequence_numbers_[id.author_id];
 
+          {
+            std::lock_guard lg(commited_messages_lock_);
+            commited_messages_.emplace_back(CommitedMessage{
+                .payload = info.payload, .vector_clock = info.vector_clock});
+            LOG("Commited message (nodeid = " + std::to_string(id.author_id) +
+                ", sequence number = " + std::to_string(id.on_author_id));
+          }
+
           if (id.author_id == my_id_) {
             std::lock_guard lg(responses_lock_);
             auto commited_seqno = commited_sequence_numbers_[id.author_id];
@@ -116,6 +130,8 @@ private:
               continue;
             }
             responses_.at(commited_seqno).set_value();
+            LOG("Response sended (sequence number = " +
+                std::to_string(id.on_author_id));
           }
         }
       }

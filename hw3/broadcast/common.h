@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -15,6 +16,8 @@ using VectorClock = std::vector<SequenceNumber>;
 struct MessageId {
   NodeId author_id;
   SequenceNumber on_author_id;
+
+  auto operator<=>(const MessageId &other) const = default;
 };
 
 } // namespace hw3::broadcast

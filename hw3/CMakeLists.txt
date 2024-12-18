@@ -1,3 +1,5 @@
+add_subdirectory(broadcast)
+
 find_package(cpprestsdk REQUIRED)
 
 add_executable(server server.cpp)
