@@ -63,6 +63,8 @@ public:
   struct CommitedMessage {
     Payload payload;
     VectorClock vector_clock;
+
+    bool operator==(const CommitedMessage &other) const = default;
   };
 
   std::vector<CommitedMessage> GetState() const {
@@ -82,6 +84,8 @@ private:
                       .is_commited = false};
     }
 
+    all_messages_.at(message_id).received_nodes.insert(my_id_);
+
     if (req.author_id == req.sender) {
       Request my_request = req;
       my_request.already_received_nodes.insert(my_id_);
@@ -93,45 +97,59 @@ private:
         channel->Send(my_request);
       }
     }
+
+    if (req.author_id != my_id_) {
+      Response response;
+      response.message_id = message_id;
+      response.received_nodes = all_messages_.at(message_id).received_nodes;
+      channels_.at(req.author_id)->Send(response);
+    }
   }
 
   void CheckForDeliveredMessages() {
-    for (auto &[id, info] : all_messages_) {
-      if (!info.is_commited &&
-          info.received_nodes.size() * 2 > total_nodes_) { // state changed
-        bool matches_commited = true;
-        for (uint32_t i = 0; i < total_nodes_; ++i) {
-          if (i == id.author_id) {
-            matches_commited &=
-                info.vector_clock[i] == commited_sequence_numbers_[i] + 1;
-          } else {
-            matches_commited &=
-                info.vector_clock[i] <= commited_sequence_numbers_[i];
-          }
-        }
-
-        if (matches_commited) {
-          info.is_commited = true;
-          ++commited_sequence_numbers_[id.author_id];
-
-          {
-            std::lock_guard lg(commited_messages_lock_);
-            commited_messages_.emplace_back(CommitedMessage{
-                .payload = info.payload, .vector_clock = info.vector_clock});
-            LOG("Commited message (nodeid = " + std::to_string(id.author_id) +
-                ", sequence number = " + std::to_string(id.on_author_id));
-          }
-
-          if (id.author_id == my_id_) {
-            std::lock_guard lg(responses_lock_);
-            auto commited_seqno = commited_sequence_numbers_[id.author_id];
-            if (!responses_.contains(commited_seqno)) {
-              LOG("Unexpected");
-              continue;
+    bool has_at_least_one_delivered_message = true;
+    while (has_at_least_one_delivered_message) {
+      has_at_least_one_delivered_message = false;
+      for (auto &[id, info] : all_messages_) {
+        if (!info.is_commited &&
+            info.received_nodes.size() * 2 > total_nodes_) { // state changed
+          bool matches_commited = true;
+          for (uint32_t i = 0; i < total_nodes_; ++i) {
+            if (i == id.author_id) {
+              matches_commited &=
+                  info.vector_clock[i] == commited_sequence_numbers_[i] + 1;
+            } else {
+              matches_commited &=
+                  info.vector_clock[i] <= commited_sequence_numbers_[i];
             }
-            responses_.at(commited_seqno).set_value();
-            LOG("Response sended (sequence number = " +
-                std::to_string(id.on_author_id));
+          }
+
+          if (matches_commited) {
+            has_at_least_one_delivered_message = true;
+
+            info.is_commited = true;
+            ++commited_sequence_numbers_[id.author_id];
+
+            {
+              std::lock_guard lg(commited_messages_lock_);
+              commited_messages_.emplace_back(CommitedMessage{
+                  .payload = info.payload, .vector_clock = info.vector_clock});
+              LOG("Commited message (mynodeid = " + std::to_string(my_id_) +
+                  ", nodeid = " + std::to_string(id.author_id) +
+                  ", sequence number = " + std::to_string(id.on_author_id));
+            }
+
+            if (id.author_id == my_id_) {
+              std::lock_guard lg(responses_lock_);
+              auto commited_seqno = commited_sequence_numbers_[id.author_id];
+              if (!responses_.contains(commited_seqno)) {
+                LOG("Unexpected");
+                continue;
+              }
+              responses_.at(commited_seqno).set_value();
+              LOG("Response sended (mynodeid = " + std::to_string(my_id_) +
+                  ", sequence number = " + std::to_string(id.on_author_id));
+            }
           }
         }
       }
