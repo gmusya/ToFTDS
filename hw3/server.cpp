@@ -234,11 +234,46 @@ ABSL_FLAG(uint16_t, max_port, 0, "");
 int main(int argc, char **argv) {
   absl::ParseCommandLine(argc, argv);
 
-  const auto my_port = absl::GetFlag(FLAGS_port);
+  const std::string host = absl::GetFlag(FLAGS_host);
+  const auto port = absl::GetFlag(FLAGS_port);
+
   const auto min_port = absl::GetFlag(FLAGS_min_port);
   const auto max_port = absl::GetFlag(FLAGS_max_port);
 
-  http_listener listener("http://localhost:" + std::to_string(my_port));
+  if (port == 0 || max_port == 0 || min_port == 0) {
+    std::cerr << "port is not set" << std::endl;
+    return 1;
+  }
+
+  if (!(min_port <= port && port <= max_port)) {
+    std::cerr
+        << "condition !(min_port <= port && port <= max_port) is not satisfied"
+        << std::endl;
+    return 1;
+  }
+
+  const auto nodes_count = max_port - min_port + 1;
+  if (!(nodes_count == 1 || nodes_count == 3 || nodes_count == 5)) {
+    std::cerr << "Unexpected number of nodes (" << nodes_count << ")"
+              << std::endl;
+    return 1;
+  }
+
+  const std::string addr = host + ":" + std::to_string(port);
+
+  std::map<hw3::broadcast::NodeId,
+           std::shared_ptr<hw3::broadcast::IMessageSender>>
+      channels_;
+
+  for (uint16_t other_port = min_port; other_port <= max_port; ++other_port) {
+    if (port == other_port) {
+      continue;
+    }
+    const std::string other_addr = host + ":" + std::to_string(other_port + 10);
+    channels_[other_port] = std::make_shared<NetworkMessageSender>(other_addr);
+  }
+
+  http_listener listener("http://localhost:" + std::to_string(port));
 
   listener.support(methods::GET, handle_get);
   listener.support(methods::PATCH, handle_patch);
