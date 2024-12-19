@@ -5,6 +5,7 @@
 #include "hw3/broadcast/message.h"
 #include "hw3/broadcast/node.h"
 #include "hw3/broadcast/node_sender.h"
+#include "hw3/broadcast/timeout_builder.h"
 #include "hw3/communication.grpc.pb.h"
 #include "hw3/communication.pb.h"
 #include <absl/flags/internal/flag.h>
@@ -36,8 +37,9 @@ public:
   State(hw3::broadcast::NodeId my_id,
         std::map<hw3::broadcast::NodeId,
                  std::shared_ptr<hw3::broadcast::IMessageSender>>
-            channels)
-      : node(my_id, std::move(channels)) {}
+            channels,
+        std::shared_ptr<hw3::broadcast::ITimeoutBuilder> timeout_builder_)
+      : node(my_id, std::move(channels), timeout_builder_) {}
 
   std::map<std::string, std::string> GetDictionary() {
     auto state = node.GetObservableState();
@@ -306,7 +308,10 @@ int main(int argc, char **argv) {
         std::make_shared<NetworkMessageSender>(other_addr);
   }
 
-  state = std::make_shared<State>(port - min_port, channels_);
+  std::shared_ptr<hw3::broadcast::ITimeoutBuilder> timeout_builder_ =
+      std::make_shared<hw3::broadcast::AttemptsTimerBuilder>(10);
+
+  state = std::make_shared<State>(port - min_port, channels_, timeout_builder_);
 
   using namespace std::chrono_literals;
   std::atomic<bool> broadcast_stopped = false;

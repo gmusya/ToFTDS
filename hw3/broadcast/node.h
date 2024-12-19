@@ -2,6 +2,8 @@
 
 #include "hw3/broadcast/common.h"
 #include "hw3/broadcast/message.h"
+#include "hw3/broadcast/timeout.h"
+#include "hw3/broadcast/timeout_builder.h"
 #include "hw3/log.h"
 
 #include <algorithm>
@@ -18,9 +20,10 @@ namespace hw3::broadcast {
 
 class Node {
 public:
-  Node(NodeId my_id, std::map<NodeId, std::shared_ptr<IMessageSender>> channels)
+  Node(NodeId my_id, std::map<NodeId, std::shared_ptr<IMessageSender>> channels,
+       std::shared_ptr<ITimeoutBuilder> timeout_builder)
       : total_nodes_(channels.size() + 1), my_id_(my_id),
-        channels_(std::move(channels)) {
+        channels_(std::move(channels)), timeout_builder_(timeout_builder) {
     commited_sequence_numbers_.resize(total_nodes_);
   }
 
@@ -42,6 +45,8 @@ public:
       }
 
       CheckForDeliveredMessages();
+
+      RetrySomeUndeliveredMessages();
     }
   }
 
@@ -144,7 +149,8 @@ private:
           MessageInfo{.payload = req.payload,
                       .received_nodes = {req.author_id, my_id_},
                       .vector_clock = req.vector_clock,
-                      .is_commited = false};
+                      .is_commited = false,
+                      .timeout_ = timeout_builder_->Build()};
     }
 
     all_messages_.at(message_id).received_nodes.insert(my_id_);
@@ -152,7 +158,7 @@ private:
       all_messages_.at(message_id).received_nodes.insert(id);
     }
 
-    if (req.author_id == req.sender) {
+    if (req.author_id == req.sender || req.sender == my_id_) {
       Request my_request = req;
       my_request.already_received_nodes.insert(my_id_);
       my_request.sender = my_id_;
@@ -164,11 +170,12 @@ private:
       }
     }
 
-    if (req.author_id != my_id_) {
+    if (req.author_id != my_id_ && req.sender != my_id_) {
       Response response;
       response.message_id = message_id;
       response.received_nodes = all_messages_.at(message_id).received_nodes;
       channels_.at(req.author_id)->Send(response);
+      channels_.at(req.sender)->Send(response);
     }
   }
 
@@ -181,6 +188,21 @@ private:
     auto &info = all_messages_.at(id);
     for (const auto node_id : resp.received_nodes) {
       info.received_nodes.insert(node_id);
+    }
+  }
+
+  void RetrySomeUndeliveredMessages() {
+    for (const auto &[id, info] : all_messages_) {
+      if (info.received_nodes.size() != total_nodes_ &&
+          info.timeout_->IsExpired()) {
+        Request request{.sender = my_id_,
+                        .author_id = id.author_id,
+                        .payload = info.payload,
+                        .vector_clock = info.vector_clock,
+                        .already_received_nodes = info.received_nodes};
+        HandleMessage(request);
+        info.timeout_->Reset();
+      }
     }
   }
 
@@ -248,6 +270,7 @@ private:
     std::set<NodeId> received_nodes;
     VectorClock vector_clock;
     bool is_commited;
+    std::shared_ptr<ITimeout> timeout_;
   };
   std::map<MessageId, MessageInfo> all_messages_;
 
@@ -259,6 +282,8 @@ private:
 
   mutable std::mutex commited_messages_lock_;
   std::vector<CommitedMessage> commited_messages_;
+
+  std::shared_ptr<ITimeoutBuilder> timeout_builder_;
 };
 
 } // namespace hw3::broadcast

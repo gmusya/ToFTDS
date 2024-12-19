@@ -8,6 +8,7 @@
 #include "hw3/broadcast/message.h"
 #include "hw3/broadcast/node.h"
 #include "hw3/broadcast/node_sender.h"
+#include "hw3/broadcast/timeout_builder.h"
 
 namespace hw3::broadcast {
 namespace {
@@ -15,7 +16,9 @@ namespace {
 class NodeTest : public ::testing::Test {};
 
 TEST(NodeTest, Trivial) {
-  hw3::broadcast::Node node(0, {});
+  auto never_retrier = std::make_shared<AttemptsTimerBuilder>(10'000);
+
+  hw3::broadcast::Node node(0, {}, never_retrier);
   Payload payload;
   payload.data.emplace_back("a", "b");
 
@@ -31,13 +34,15 @@ TEST(NodeTest, Trivial) {
 }
 
 TEST(NodeTest, ThreeConflictingNodes) {
+  auto never_retrier = std::make_shared<AttemptsTimerBuilder>(10'000);
+
   auto sender0 = std::make_shared<TrivialMessageSender>();
   auto sender1 = std::make_shared<TrivialMessageSender>();
   auto sender2 = std::make_shared<TrivialMessageSender>();
 
-  hw3::broadcast::Node node0(0, {{1, sender1}, {2, sender2}});
-  hw3::broadcast::Node node1(1, {{0, sender0}, {2, sender2}});
-  hw3::broadcast::Node node2(2, {{0, sender0}, {1, sender1}});
+  hw3::broadcast::Node node0(0, {{1, sender1}, {2, sender2}}, never_retrier);
+  hw3::broadcast::Node node1(1, {{0, sender0}, {2, sender2}}, never_retrier);
+  hw3::broadcast::Node node2(2, {{0, sender0}, {1, sender1}}, never_retrier);
 
   sender0->Init(&node0);
   sender1->Init(&node1);
@@ -102,6 +107,8 @@ TEST(NodeTest, ThreeConflictingNodes) {
 }
 
 TEST(NodeTest, CausalOrder) {
+  auto never_retrier = std::make_shared<AttemptsTimerBuilder>(10'000);
+
   constexpr int kTotalNodes = 5;
 
   std::vector<std::vector<std::shared_ptr<TrivialMessageSender>>>
@@ -131,7 +138,7 @@ TEST(NodeTest, CausalOrder) {
       channels[j] = lazy_senders[i][j];
     }
 
-    nodes.emplace_back(std::make_unique<Node>(i, channels));
+    nodes.emplace_back(std::make_unique<Node>(i, channels, never_retrier));
 
     for (size_t j = 0; j < kTotalNodes; ++j) {
       trivial_senders[j][i]->Init(nodes[i].get());
