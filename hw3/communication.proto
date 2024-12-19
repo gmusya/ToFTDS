@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package communication;
+
+service Receiver {
+  rpc SendRequest(Request) returns (TrivialResponse) {}
+  rpc SendResponse(Response) returns (TrivialResponse) {}
+}
+
+message Item {
+  string key = 1;
+  string value = 2;
+}
+
+message Request {
+  int32 sender = 1;
+  int32 author = 2;
+  repeated Item payload = 3;
+  repeated int32 vector_clock = 4;
+  repeated int32 already_received_nodes = 5;
+}
+
+message Response {
+  int32 author = 1;
+  int32 seqno_at_author = 2;
+  repeated int32 received_nodes = 3;  
+}
+
+message TrivialResponse {
+  string comment = 1;
+}

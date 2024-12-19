@@ -17,6 +17,6 @@ set(_GRPC_GRPCPP gRPC::grpc++)
 set(_GRPC_CPP_PLUGIN_EXECUTABLE $<TARGET_FILE:gRPC::grpc_cpp_plugin>)
 
 add_subdirectory(hw1)
-add_subdirectory(hw2)
+# add_subdirectory(hw2)
 
 add_subdirectory(hw3)
