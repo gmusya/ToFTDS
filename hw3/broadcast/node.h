@@ -4,6 +4,7 @@
 #include "hw3/broadcast/message.h"
 #include "hw3/log.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <future>
@@ -61,15 +62,77 @@ public:
   }
 
   struct CommitedMessage {
+    NodeId author;
     Payload payload;
     VectorClock vector_clock;
 
     bool operator==(const CommitedMessage &other) const = default;
   };
 
-  std::vector<CommitedMessage> GetState() const {
+  std::vector<CommitedMessage> GetInternalState() const {
     std::lock_guard lg(commited_messages_lock_);
     return commited_messages_;
+  }
+
+  std::map<Key, Value> GetObservableState() {
+    return StateToObservableState(GetInternalState());
+  }
+
+  static std::map<Key, Value>
+  StateToObservableState(const std::vector<CommitedMessage> &messages) {
+    std::map<Key, std::vector<CommitedMessage>> key_to_messages;
+    for (const auto &message : messages) {
+      for (const auto &[key, value] : message.payload.data) {
+        key_to_messages[key].emplace_back(message);
+      }
+    }
+
+    std::map<Key, Value> result;
+    for (auto &[k, v] : key_to_messages) {
+      v = GetObservableMessages(v);
+      std::sort(v.begin(), v.end(), [](const auto &lhs, const auto &rhs) {
+        return lhs.author > rhs.author;
+      });
+      for (const auto &[k1, v1] : v[0].payload.data) {
+        if (k == k1) {
+          result[k] = v1;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  static std::vector<CommitedMessage>
+  GetObservableMessages(const std::vector<CommitedMessage> &messages) {
+    std::vector<CommitedMessage> observable_messages;
+
+    for (size_t i = 0; i < messages.size(); ++i) {
+      bool i_is_observable = true;
+      for (size_t j = 0; j < messages.size(); ++j) {
+        if (i == j) {
+          continue;
+        }
+        bool j_hides_i = true;
+        for (size_t id = 0; id < messages[i].vector_clock.size(); ++id) {
+          if (messages[i].vector_clock[id] > messages[j].vector_clock[id]) {
+            j_hides_i = false;
+            break;
+          }
+        }
+
+        if (j_hides_i) {
+          i_is_observable = false;
+          break;
+        }
+      }
+
+      if (i_is_observable) {
+        observable_messages.emplace_back(messages[i]);
+      }
+    }
+
+    return observable_messages;
   }
 
 private:
@@ -147,8 +210,10 @@ private:
 
             {
               std::lock_guard lg(commited_messages_lock_);
-              commited_messages_.emplace_back(CommitedMessage{
-                  .payload = info.payload, .vector_clock = info.vector_clock});
+              commited_messages_.emplace_back(
+                  CommitedMessage{.author = id.author_id,
+                                  .payload = info.payload,
+                                  .vector_clock = info.vector_clock});
               LOG("Commited message (mynodeid = " + std::to_string(my_id_) +
                   ", nodeid = " + std::to_string(id.author_id) +
                   ", sequence number = " + std::to_string(id.on_author_id));

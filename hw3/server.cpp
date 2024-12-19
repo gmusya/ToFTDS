@@ -3,6 +3,8 @@
 
 #include "hw3/broadcast/common.h"
 #include "hw3/broadcast/message.h"
+#include "hw3/broadcast/node.h"
+#include "hw3/broadcast/node_sender.h"
 #include "hw3/communication.grpc.pb.h"
 #include "hw3/communication.pb.h"
 #include <absl/flags/internal/flag.h>
@@ -13,6 +15,7 @@
 #include <grpcpp/client_context.h>
 #include <grpcpp/create_channel.h>
 #include <grpcpp/security/credentials.h>
+#include <grpcpp/server_builder.h>
 #include <grpcpp/support/status.h>
 #include <mutex>
 #include <openssl/rsa.h>
@@ -28,63 +31,33 @@ using namespace web::http::experimental::listener;
 #include <map>
 #include <string>
 
-std::mutex lock;
-std::map<std::string, std::string> dictionary;
+class State {
+public:
+  State(hw3::broadcast::NodeId my_id,
+        std::map<hw3::broadcast::NodeId,
+                 std::shared_ptr<hw3::broadcast::IMessageSender>>
+            channels)
+      : node(my_id, std::move(channels)) {}
 
-void handle_get(http_request request) {
-  std::lock_guard lg(lock);
-  LOG("\nhandle GET\n");
-
-  auto answer = json::value::object();
-
-  for (auto const &p : dictionary) {
-    answer[p.first] = json::value::string(p.second);
+  std::map<std::string, std::string> GetDictionary() {
+    auto state = node.GetObservableState();
+    return state;
   }
 
-  request.reply(status_codes::OK, answer);
-}
+  void AddPatch(hw3::broadcast::Payload payload) {
+    auto future = node.AppendNewPayload(payload);
+    future.get();
+  }
 
-void handle_request(
-    http_request request,
-    std::function<void(json::value const &, json::value &)> action) {
-  auto answer = json::value::object();
+  void Tick() { node.Tick(); }
 
-  request.extract_json()
-      .then([&answer, &action](pplx::task<json::value> task) {
-        try {
-          auto const &jvalue = task.get();
+  hw3::broadcast::Node *GetNodePtr() { return &node; }
 
-          if (!jvalue.is_null()) {
-            action(jvalue, answer);
-          }
-        } catch (http_exception const &e) {
-          std::cout << e.what() << std::endl;
-        }
-      })
-      .wait();
+private:
+  hw3::broadcast::Node node;
+};
 
-  request.reply(status_codes::OK, answer);
-}
-
-void handle_patch(http_request request) {
-  std::lock_guard lg(lock);
-  LOG("\nhandle PATCH\n");
-
-  handle_request(request, [](json::value const &jvalue, json::value &answer) {
-    if (!jvalue.is_object()) {
-      throw http_exception(422, "Object is expected");
-    }
-    for (auto const &e : jvalue.as_object()) {
-      const auto &key = e.first;
-      const auto &value = e.second;
-      if (!value.is_string()) {
-        throw http_exception(422, "Value for " + std::string(key) +
-                                      " is not string");
-      }
-      dictionary[key] = value.as_string();
-    }
-  });
-}
+std::shared_ptr<State> state;
 
 class CommunicationImpl : public communication::Receiver::Service {
 public:
@@ -218,6 +191,8 @@ public:
         }
       }
     };
+
+    tasks_.emplace_back(std::async(std::move(task)));
   }
 
 private:
@@ -225,6 +200,63 @@ private:
   std::mutex lock_;
   std::deque<std::future<void>> tasks_;
 };
+
+void handle_get(http_request request) {
+  LOG("\nhandle GET\n");
+
+  auto answer = json::value::object();
+  auto dict = state->GetDictionary();
+
+  for (auto const &p : dict) {
+    answer[p.first] = json::value::string(p.second);
+  }
+
+  request.reply(status_codes::OK, answer);
+}
+
+void handle_request(
+    http_request request,
+    std::function<void(json::value const &, json::value &)> action) {
+  auto answer = json::value::object();
+
+  request.extract_json()
+      .then([&answer, &action](pplx::task<json::value> task) {
+        try {
+          auto const &jvalue = task.get();
+
+          if (!jvalue.is_null()) {
+            action(jvalue, answer);
+          }
+        } catch (http_exception const &e) {
+          std::cout << e.what() << std::endl;
+        }
+      })
+      .wait();
+
+  request.reply(status_codes::OK, answer);
+}
+
+void handle_patch(http_request request) {
+  LOG("\nhandle PATCH\n");
+
+  handle_request(request, [](json::value const &jvalue, json::value &answer) {
+    if (!jvalue.is_object()) {
+      throw http_exception(422, "Object is expected");
+    }
+    hw3::broadcast::Payload payload;
+    for (auto const &e : jvalue.as_object()) {
+      const auto &key = e.first;
+      const auto &value = e.second;
+      if (!value.is_string()) {
+        throw http_exception(422, "Value for " + std::string(key) +
+                                      " is not string");
+      }
+      payload.data.emplace_back(key, value.as_string());
+    }
+
+    state->AddPatch(std::move(payload));
+  });
+}
 
 ABSL_FLAG(std::string, host, "0.0.0.0", "");
 ABSL_FLAG(uint16_t, port, 0, "");
@@ -270,8 +302,40 @@ int main(int argc, char **argv) {
       continue;
     }
     const std::string other_addr = host + ":" + std::to_string(other_port + 10);
-    channels_[other_port] = std::make_shared<NetworkMessageSender>(other_addr);
+    channels_[other_port - min_port] =
+        std::make_shared<NetworkMessageSender>(other_addr);
   }
+
+  state = std::make_shared<State>(port - min_port, channels_);
+
+  using namespace std::chrono_literals;
+  std::atomic<bool> broadcast_stopped = false;
+  auto spin_broadcast = [&]() {
+    while (!broadcast_stopped.load()) {
+      state->Tick();
+      std::this_thread::sleep_for(1s);
+    }
+  };
+  std::thread run_consensus(spin_broadcast);
+
+  auto sender_to_myself =
+      std::make_shared<hw3::broadcast::TrivialMessageSender>();
+
+  sender_to_myself->Init(state->GetNodePtr());
+
+  std::unique_ptr<CommunicationImpl> communication_service =
+      std::make_unique<CommunicationImpl>(sender_to_myself);
+
+  std::unique_ptr<grpc::Server> communication_server = [&]() {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort(host + ":" + std::to_string(port + 10),
+                             grpc::InsecureServerCredentials());
+    builder.RegisterService(communication_service.get());
+    return std::unique_ptr<grpc::Server>(builder.BuildAndStart());
+  }();
+
+  auto spin_communication_server = [&]() { communication_server->Wait(); };
+  std::thread run_communication_server(spin_communication_server);
 
   http_listener listener("http://localhost:" + std::to_string(port));
 
@@ -287,17 +351,15 @@ int main(int argc, char **argv) {
       std::string action;
       std::cin >> action;
       if (action == "dump") {
-        std::lock_guard lg(lock);
         std::stringstream result;
+        auto dict = state->GetDictionary();
         result << "{\n";
-        for (const auto &[k, v] : dictionary) {
+        for (const auto &[k, v] : dict) {
           result << "  " << k << ": " << v << "\n";
         }
         result << "}";
         std::cerr << result.str() << std::endl;
-      } else if (action == "clear") {
-        std::lock_guard lg(lock);
-        dictionary.clear();
+      } else if (action == "stop") {
       }
     }
   } catch (std::exception const &e) {
